@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iOS App Downloader</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #63708a;
+      --line: #e4e9f2;
+      --card: rgba(255, 255, 255, .84);
+      --blue: #287ff0;
+      --blue-dark: #1766cb;
+      --red: #d00000;
+      --shadow: 0 18px 50px rgba(51, 72, 112, .12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(135deg, #fff0f6 0%, #f2efff 48%, #eaf4ff 100%);
+      font: 16px/1.75 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    .shell { max-width: 1080px; margin: 0 auto; padding: 28px 20px 56px; }
+    .hero, .section, footer {
+      background: var(--card);
+      border: 1px solid rgba(255,255,255,.9);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+    .hero { padding: 34px 38px; border-radius: 26px; }
+    .brand { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+    h1 { margin: 0 0 10px; font-size: clamp(30px, 5vw, 48px); letter-spacing: -.03em; }
+    h2 { margin: 0 0 16px; font-size: 26px; }
+    h3 { margin: 24px 0 8px; font-size: 19px; }
+    p { margin: 10px 0 16px; }
+    .lead { max-width: 820px; color: var(--muted); font-size: 18px; }
+    .language { display: inline-flex; gap: 8px; padding: 5px; border: 1px solid var(--line); border-radius: 999px; background: #fff; }
+    .language button { border: 0; border-radius: 999px; padding: 7px 14px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; }
+    .language button.active { color: #fff; background: var(--blue); }
+    .warning { margin-top: 24px; color: var(--red); font-weight: 800; }
+    .warning strong:first-child { font-size: 20px; }
+    .warning strong:last-child { display: block; font-size: 17px; }
+    .links { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 10px; }
+    .links a { color: var(--blue-dark); text-decoration: none; border: 1px solid #bcd5fb; border-radius: 999px; padding: 7px 14px; background: #f5f9ff; }
+    .links a:hover { background: #e7f1ff; }
+    .section { margin-top: 22px; padding: 28px 38px; border-radius: 22px; }
+    ul, ol { padding-left: 24px; }
+    li { margin: 6px 0; }
+    .screens { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    figure { margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 16px; background: #fff; }
+    figure img { display: block; width: 100%; height: auto; border-radius: 10px; }
+    figcaption { padding: 8px 4px 0; color: var(--muted); font-weight: 600; }
+    code { padding: 2px 6px; border-radius: 6px; background: #eef2f8; }
+    footer { margin-top: 22px; padding: 20px 28px; border-radius: 18px; color: var(--muted); }
+    footer a { color: var(--blue-dark); }
+    [data-lang="en"] { display: none; }
+    @media (max-width: 700px) {
+      .shell { padding: 12px 12px 32px; }
+      .hero, .section { padding: 24px 20px; }
+      .brand { flex-direction: column; }
+      .screens { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div class="brand">
+        <div>
+          <h1>iOS App Downloader</h1>
+          <p class="lead" data-lang="zh">一个简单易用的 Windows iOS 旧版应用下载工具。搜索 App Store 应用、查看历史版本，并将指定版本下载为 IPA 文件。</p>
+          <p class="lead" data-lang="en">A simple Windows tool for searching App Store apps, viewing older versions, and downloading selected versions as IPA files.</p>
+        </div>
+        <nav class="language" aria-label="Language selector">
+          <button type="button" data-language-button="en">English</button>
+          <button type="button" data-language-button="zh">中文</button>
+        </nav>
+      </div>
+      <div class="warning" data-lang="zh">
+        <strong>本软件以开源并且免费，切勿上当受骗！！！</strong>
+        <strong>本软件从未收集用户账号密码，代码公开透明！！！</strong>
+      </div>
+      <div class="warning" data-lang="en">
+        <strong>This software is open-source and free. Beware of scams!!!</strong>
+        <strong>This software never collects users' account passwords; the code is public and transparent!!!</strong>
+      </div>
+      <div class="links">
+        <a href="https://github.com/mango6i/iOSAppDownloader">GitHub</a>
+        <a href="https://github.com/Kosthi/ipatool-rs">ipatool-rs</a>
+      </div>
+    </header>
+
+    <main data-lang="zh">
+      <section class="section">
+        <h2>功能</h2>
+        <ul>
+          <li>Apple ID 登录，支持双重认证验证码</li>
+          <li>登录自动尝试系统代理、本机代理端口和直连，不要求手动切换节点</li>
+          <li>账号会话只在本次运行期间有效，注销、退出或下次启动都会清理</li>
+          <li>历史版本支持“官方版本列表”和“免登录查询”两种方式</li>
+          <li>下载队列支持最多同时下载 10 个任务</li>
+          <li>每个任务独立显示大小、速度、进度、用时和剩余时间</li>
+          <li>下载完成后可直接打开保存文件夹</li>
+          <li>设置中支持“跟随系统 / 简体中文 / English”</li>
+        </ul>
+      </section>
+      <section class="section">
+        <h2>使用说明</h2>
+        <ol>
+          <li>双击 <code>iOSAppDownloader.exe</code>。</li>
+          <li>点击右上角设置按钮，登录 Apple ID；如果账号启用了双重认证，在验证码框输入 6 位验证码。</li>
+          <li>在“APP搜索”中输入应用名称并搜索，双击应用进入“历史版本”。</li>
+          <li>选择“官方版本列表”或“免登录查询”，勾选需要的版本后加入下载队列。</li>
+          <li>下载完成后，点击任务中的“打开”查看 IPA 文件。</li>
+        </ol>
+        <p>选择中国区以外的区域时，软件会提示需要拥有对应区域 App Store 权限的 Apple ID。没有对应区域账号时，免登录查询仍可用于查看资料，但官方版本获取和下载可能无法完成。</p>
+      </section>
+      <section class="section">
+        <h2>软件截图</h2>
+        <p>以下为软件实际界面截图。截图中的账号、下载路径均为公开示例信息，不涉及用户隐私。</p>
+        <div class="screens">
+          <figure><img src="images/01-search.png" alt="应用搜索"><figcaption>应用搜索</figcaption></figure>
+          <figure><img src="images/02-history.png" alt="历史版本"><figcaption>历史版本</figcaption></figure>
+          <figure><img src="images/03-downloads.png" alt="下载队列"><figcaption>下载队列</figcaption></figure>
+          <figure><img src="images/04-settings.png" alt="Apple ID 设置"><figcaption>Apple ID 设置</figcaption></figure>
+        </div>
+      </section>
+      <section class="section">
+        <h2>发布说明</h2>
+        <p>仓库同时提供 Windows 成品程序和项目源码：</p>
+        <ul>
+          <li><code>iOSAppDownloader.exe</code>：开箱即用的 Windows 成品</li>
+          <li><code>ios_old_app_downloader.py</code>：主程序源码</li>
+          <li><code>ios_old_app_downloader.spec</code>、<code>version_info.txt</code>、<code>appstore.ico</code>：打包所需文件</li>
+          <li><code>ipatool/</code>：运行所需的 ipatool-rs 组件</li>
+        </ul>
+        <p>普通用户直接下载成品即可；开发者可以查看源码并按自己的环境重新打包。</p>
+      </section>
+      <section class="section">
+        <h2>接口来源</h2>
+        <p>本软件的 Apple ID 登录、版本列表和 IPA 下载能力使用开源项目 <strong>ipatool</strong> 的接口能力；本成品内置的 Windows 运行组件来自 <a href="https://github.com/Kosthi/ipatool-rs">Kosthi/ipatool-rs</a>。</p>
+      </section>
+    </main>
+
+    <main data-lang="en">
+      <section class="section">
+        <h2>Features</h2>
+        <ul>
+          <li>Apple ID sign-in with two-factor authentication code support</li>
+          <li>Automatically tries the system proxy, local proxy ports, and direct connection</li>
+          <li>The account session is valid only while the app is running; sign-out and exit clear it</li>
+          <li>Version History provides “Official version list” and “Login-free lookup” modes</li>
+          <li>Download queue supports up to 10 simultaneous tasks</li>
+          <li>Each task shows its size, speed, progress, elapsed time, and remaining time</li>
+          <li>Open the download folder directly after a task completes</li>
+          <li>Language options: Follow system, Simplified Chinese, or English</li>
+        </ul>
+      </section>
+      <section class="section">
+        <h2>Usage</h2>
+        <ol>
+          <li>Double-click <code>iOSAppDownloader.exe</code>.</li>
+          <li>Open Settings and sign in with an Apple ID. If two-factor authentication is enabled, enter the 6-digit code.</li>
+          <li>Search for an app in App Search and double-click it to open Version History.</li>
+          <li>Choose “Official version list” or “Login-free lookup”, select versions, and add them to the download queue.</li>
+          <li>When a download finishes, click Open in the task row to view the IPA file.</li>
+        </ol>
+        <p>When a region outside Mainland China is selected, the app warns that the Apple ID must have App Store access for that region. Login-free lookup may still show information, but official version retrieval and downloads may not work without a matching regional account.</p>
+      </section>
+      <section class="section">
+        <h2>Screenshots</h2>
+        <p>These screenshots show the actual software interface. The account and path shown are public examples and do not contain user privacy.</p>
+        <div class="screens">
+          <figure><img src="images/01-search.png" alt="App Search"><figcaption>App Search</figcaption></figure>
+          <figure><img src="images/02-history.png" alt="Version History"><figcaption>Version History</figcaption></figure>
+          <figure><img src="images/03-downloads.png" alt="Download Queue"><figcaption>Download Queue</figcaption></figure>
+          <figure><img src="images/04-settings.png" alt="Apple ID Settings"><figcaption>Apple ID Settings</figcaption></figure>
+        </div>
+      </section>
+      <section class="section">
+        <h2>Release</h2>
+        <p>This repository includes the Windows release and the project source:</p>
+        <ul>
+          <li><code>iOSAppDownloader.exe</code>: ready-to-use Windows build</li>
+          <li><code>ios_old_app_downloader.py</code>: main source file</li>
+          <li><code>ios_old_app_downloader.spec</code>, <code>version_info.txt</code>, and <code>appstore.ico</code>: packaging files</li>
+          <li><code>ipatool/</code>: required ipatool-rs runtime components</li>
+        </ul>
+        <p>Download the release for normal use, or inspect the source and rebuild it in your own environment.</p>
+      </section>
+      <section class="section">
+        <h2>API Source</h2>
+        <p>The Apple ID sign-in, version listing, and IPA download capabilities use the open-source <strong>ipatool</strong> API. The bundled Windows runtime component is provided by <a href="https://github.com/Kosthi/ipatool-rs">Kosthi/ipatool-rs</a>.</p>
+      </section>
+    </main>
+
+    <footer>
+      <span data-lang="zh">项目源码：</span><span data-lang="en">Project source:</span>
+      <a href="https://github.com/mango6i/iOSAppDownloader">github.com/mango6i/iOSAppDownloader</a>
+    </footer>
+  </div>
+  <script>
+    (() => {
+      const buttons = [...document.querySelectorAll('[data-language-button]')];
+      const blocks = [...document.querySelectorAll('[data-lang]')];
+      const getLanguage = () => {
+        const query = new URLSearchParams(location.search).get('lang');
+        if (query === 'en' || query === 'zh') return query;
+        return (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+      };
+      const setLanguage = (language, updateUrl = true) => {
+        document.documentElement.lang = language === 'en' ? 'en' : 'zh-CN';
+        blocks.forEach(block => { block.style.display = block.dataset.lang === language ? '' : 'none'; });
+        buttons.forEach(button => { button.classList.toggle('active', button.dataset.languageButton === language); });
+        if (updateUrl) {
+          const url = new URL(location.href);
+          url.searchParams.set('lang', language);
+          history.replaceState(null, '', url);
+        }
+      };
+      buttons.forEach(button => button.addEventListener('click', () => setLanguage(button.dataset.languageButton)));
+      setLanguage(getLanguage(), false);
+    })();
+  </script>
+</body>
+</html>
