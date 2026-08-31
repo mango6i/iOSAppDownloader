@@ -2,7 +2,9 @@
 from pathlib import Path
 import os
 
-ROOT = Path(__file__).resolve().parent
+# PyInstaller executes a spec in a namespace where __file__ is not guaranteed.
+# SPECPATH is provided by PyInstaller and keeps the build portable.
+ROOT = Path(SPECPATH) if 'SPECPATH' in globals() else Path.cwd()
 WINDOWS_DIR = Path(os.environ.get('WINDIR', 'C:/Windows'))
 hiddenimports = ['PyQt6.sip']
 version_file = str(ROOT / 'version_info.txt')
