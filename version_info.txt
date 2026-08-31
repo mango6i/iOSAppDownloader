@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 0, 1, 0),
+    prodvers=(1, 0, 1, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         '080404B0',
         [StringStruct('CompanyName', '果果'),
          StringStruct('FileDescription', 'iOS 旧版应用下载工具'),
-         StringStruct('FileVersion', '1.0.0.0'),
+         StringStruct('FileVersion', '1.0.1.0'),
          StringStruct('InternalName', 'iOSAppDownloader'),
          StringStruct('LegalCopyright', 'Copyright (C) 2026 果果'),
          StringStruct('OriginalFilename', 'iOSAppDownloader.exe'),
          StringStruct('ProductName', 'iOS App Downloader'),
-         StringStruct('ProductVersion', '1.0.0.0')]
+         StringStruct('ProductVersion', '1.0.1.0')]
       )]
     ),
     VarFileInfo([VarStruct('Translation', [0x0804, 1200])])
