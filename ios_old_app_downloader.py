@@ -346,6 +346,11 @@ TRANSLATIONS = {
         "download_closed": "下载窗口已关闭",
         "empty_queue_title": "提示",
         "empty_queue_message": "下载队列为空，请到「历史版本」勾选或双击要下载的版本。",
+        "genuine_suffix": "（正版）",
+        "copy_version_id": "复制版本 ID",
+        "export_version_ids": "导出全部版本 ID 到剪贴板",
+        "version_id_copied": "版本 ID %s 已复制。",
+        "version_ids_copied": "%d 条版本 ID 已复制到剪贴板。",
         "install_header": "已下载的安装包（目录: %s）：",
         "open_folder": "打开目录",
         "delete_selected": "删除选中",
@@ -532,6 +537,11 @@ TRANSLATIONS = {
         "download_closed": "Download window closed",
         "empty_queue_title": "Notice",
         "empty_queue_message": "The download queue is empty. Select or double-click a version in Version History first.",
+        "genuine_suffix": " (App Store)",
+        "copy_version_id": "Copy version ID",
+        "export_version_ids": "Export all version IDs to clipboard",
+        "version_id_copied": "Version ID %s was copied.",
+        "version_ids_copied": "%d version ID(s) were copied to the clipboard.",
         "install_header": "Downloaded packages (folder: %s):",
         "open_folder": "Open folder",
         "delete_selected": "Delete selected",
@@ -4672,16 +4682,20 @@ class TransparentMacWindow(QMainWindow):
         cb = self.history_table.item(row, 0)
         d = cb.data(Qt.ItemDataRole.UserRole) if cb else None
         menu = QMenu(self)
-        act_copy = menu.addAction("复制版本ID")
-        act_all = menu.addAction("导出全部版本ID到剪贴板")
+        act_copy = menu.addAction(tr("copy_version_id"))
+        act_all = menu.addAction(tr("export_version_ids"))
         chosen = menu.exec(self.history_table.mapToGlobal(pos))
         if chosen == act_copy and d:
             QApplication.clipboard().setText(str(d["version_id"]))
-            MacStyleMessageBox(self, title="已复制", message="版本ID %s 已复制。" % d["version_id"], icon_type="success").exec()
+            MacStyleMessageBox(self, title=tr("copied_title"),
+                               message=tr("version_id_copied") % d["version_id"],
+                               icon_type="success").exec()
         elif chosen == act_all:
             lines = ["%s\t%s\t%s" % (r["version"], r["date"], r["external_id"]) for r in self.history_rows]
             QApplication.clipboard().setText("\n".join(lines))
-            MacStyleMessageBox(self, title="已复制", message="%d 条版本ID已复制到剪贴板。" % len(lines), icon_type="success").exec()
+            MacStyleMessageBox(self, title=tr("copied_title"),
+                               message=tr("version_ids_copied") % len(lines),
+                               icon_type="success").exec()
 
     # ═════════════════════════════════════════
     # ═════════════════════════════════════════
@@ -4857,8 +4871,9 @@ class TransparentMacWindow(QMainWindow):
         total = int(task.get("total") or 0)
         name_item = table.item(row, 1)
         if name_item:
-            name_item.setText("📱 %s_%s（正版）" %
-                              (task.get("name", ""), task.get("version", "")))
+            name_item.setText("📱 %s_%s%s" %
+                              (task.get("name", ""), task.get("version", ""),
+                               tr("genuine_suffix")))
             name_item.setToolTip(self._download_status_text(status))
             if task.get("error"):
                 name_item.setToolTip("%s\n%s" % (self._download_status_text(status), task["error"]))
