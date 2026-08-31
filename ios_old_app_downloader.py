@@ -140,7 +140,6 @@ def find_ipatool():
     cands += [
         os.path.join(APP_DIR, "ipatool", "kosthi", "ipatool.exe"),
         os.path.join(APP_DIR, "kosthi", "ipatool.exe"),
-        r"C:\Users\Administrator\WorkBuddy\2026-08-29-11-52-41\ipatool\kosthi\ipatool.exe",
         os.path.join(APP_DIR, "ipatool.exe"),
     ]
     for c in cands:
