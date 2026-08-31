@@ -1,0 +1,25 @@
+# ── Python 缓存 / 构建产物 ──
+__pycache__/
+*.pyc
+build/
+dist/
+_build_artifacts_trash/
+*.spec.bak
+
+# ── 运行时大二进制（构建 / 运行前需另行准备，详见 README）──
+# 打包后的单文件成品（请走 GitHub Release 发布，不要进 git）
+iOSAppDownloader.exe
+# Apple 专有 SAP 签名引擎种子（CommerceKit / CoreFP 等，体积大且有再分发限制）
+ipatool/engine_seed/
+
+# ── 本地状态 / 工作区 ──
+.workbuddy/
+.ipatool/
+.ipatool_state/
+ipas/
+tests/
+
+# ── 系统 ──
+Thumbs.db
+ehthumbs.db
+Desktop.ini
