@@ -12,6 +12,7 @@ Window frame is adapted from the desktop "IP Batch Converter" tool.
 """
 import sys, os, json, time, subprocess, io, re, base64, shutil, threading, ctypes, socket, ssl, tempfile, atexit, html
 import zipfile, plistlib, urllib.parse, urllib.request, urllib.error, uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from ctypes import windll
 
@@ -99,6 +100,9 @@ _ACTIVE_TOOL_WORKERS = set()
 _DIAGNOSTIC_LOCK = threading.Lock()
 _DIAGNOSTIC_PATH = os.path.join(
     _LOCAL_DATA_ROOT, "iOSOldAppDownloader", "last_runtime_error.log")
+_ICON_CACHE = {}
+_ICON_CACHE_LOCK = threading.Lock()
+_ICON_CACHE_LIMIT = 256
 
 
 def _diagnostic(event, detail=""):
@@ -125,7 +129,7 @@ def _unhandled_exception(exc_type, exc_value, exc_traceback):
         detail = repr(exc_value)
     _diagnostic("unhandled_exception", detail)
     try:
-        _show_error("软件运行错误", "登录处理发生异常，程序已阻止闪退。\n\n%s" % str(exc_value))
+        _show_error("软件运行错误", "程序遇到未处理的异常，已阻止闪退。\n\n%s" % str(exc_value))
     except Exception:
         pass
 
@@ -179,7 +183,7 @@ STARTUP_REPO_URL = "https://github.com/mango6i/iOSAppDownloader"
 
 TRANSLATIONS = {
     "zh": {
-        "window_title": "iOS旧版应用下载 v1.0",
+        "window_title": "iOS旧版应用下载 v1.0.1",
         "app_title": "iOS 旧版应用下载",
         "tray_tip": "iOS旧版应用下载",
         "show_window": "显示窗口",
@@ -304,9 +308,68 @@ TRANSLATIONS = {
         "task_retry": "重试",
         "task_pause": "暂停",
         "task_remove": "删除",
+        "searching": "搜索中：%s（%s，前 %d 个）...",
+        "search_results_hint": "找到 %d 个结果。双击任意应用进入「历史版本」，选择版本后即可直接下载旧版。",
+        "search_failed": "搜索失败",
+        "open_store": "前往 App Store",
+        "copy_link": "复制链接",
+        "find_versions_local": "查找版本 ID（免登录）",
+        "copied_title": "已复制",
+        "copied_message": "App Store 链接已复制到剪贴板。",
+        "no_rating": "暂无评分",
+        "price": "价格 %s",
+        "free": "免费",
+        "version_value": "版本 %s",
+        "not_available": "暂未获取",
+        "developer": "开发者 %s",
+        "bundle": "包名 %s",
+        "category": "分类 %s  |  ",
+        "no_app_selected": "尚未选择应用。请到「APP搜索」中双击任意应用。",
+        "history_mode_label": "查找版本 ID 模式:",
+        "load_history": "加载历史版本",
+        "select_all": "全选",
+        "invert": "反选",
+        "download_selected": "下载选中版本",
+        "cancel_select_all": "取消全选",
+        "choose_app_title": "提示",
+        "choose_app_message": "请先到「APP搜索」中双击选择一个应用。",
+        "current_app": "当前应用：%s  (包名 %s  |  App ID %s)",
+        "history_count": "%s  共 %d 个历史版本（勾选或双击行即可下载）。",
+        "history_failed": "获取历史版本失败",
+        "load_failed": "获取失败",
+        "fetch_on_download": "下载时获取",
+        "reading_size": "读取中",
+        "overall_progress": "总进度 %d%%（已完成 %d / %d）",
+        "active_waiting": "正在下载 %d 个，等待 %d 个",
+        "recent_complete": "最近一个下载任务已完成",
+        "download_failed_hint": "有下载任务失败，请点“重试”",
+        "download_closed": "下载窗口已关闭",
+        "empty_queue_title": "提示",
+        "empty_queue_message": "下载队列为空，请到「历史版本」勾选或双击要下载的版本。",
+        "install_header": "已下载的安装包（目录: %s）：",
+        "open_folder": "打开目录",
+        "delete_selected": "删除选中",
+        "clear_all": "清空全部",
+        "refresh": "刷新",
+        "install_tip": "安装到手机（真实有效）：\n1. 手机「卸载 App」（设置→通用→iPhone 储存空间→卸载，保留数据）；\n2. 电脑用 iMazing 3.4.0 或 爱思助手「导入安装」选择上方 IPA；\n3. 装完：设置→App Store→关闭「App 更新」，避免被覆盖回新版。\n操作：双击=打开所在文件夹；可多选后点「删除选中」；右键可「在文件夹中打开 / 删除 / 复制路径」。",
+        "no_downloaded_ipa": "（暂无已下载的 IPA，先到「下载应用」执行下载）",
+        "open_folder_context": "在文件夹中打开",
+        "copy_path": "复制路径",
+        "delete": "删除",
+        "path_copied": "路径已复制：\n%s",
+        "confirm_delete_one": "确定删除该 IPA？\n%s",
+        "delete_failed": "删除失败",
+        "select_packages": "请先选中要删除的安装包（可配合 Ctrl / Shift 多选）。",
+        "confirm_delete_many": "确定删除以下 %d 个安装包？\n\n%s\n\n删除后无法恢复。",
+        "partial_delete_failed": "部分删除失败",
+        "deleted_packages": "已删除 %d 个安装包。",
+        "nothing_to_clear": "当前没有可清空的安装包。",
+        "confirm_clear": "确定清空全部 %d 个安装包？\n\n目录：%s\n\n删除后无法恢复。",
+        "clear_result": "已清空，其中 %d 个删除失败。",
+        "cleared_packages": "已清空 %d 个安装包。",
     },
     "en": {
-        "window_title": "iOS Old App Downloader v1.0",
+        "window_title": "iOS Old App Downloader v1.0.1",
         "app_title": "iOS Old App Downloader",
         "tray_tip": "iOS Old App Downloader",
         "show_window": "Show window",
@@ -431,6 +494,65 @@ TRANSLATIONS = {
         "task_retry": "Retry",
         "task_pause": "Pause",
         "task_remove": "Remove",
+        "searching": "Searching: %s (%s, first %d items)...",
+        "search_results_hint": "Found %d result(s). Double-click an app to open Version History and download an older version.",
+        "search_failed": "Search failed",
+        "open_store": "Open App Store",
+        "copy_link": "Copy link",
+        "find_versions_local": "Find version IDs (login-free)",
+        "copied_title": "Copied",
+        "copied_message": "The App Store link was copied to the clipboard.",
+        "no_rating": "No rating",
+        "price": "Price %s",
+        "free": "Free",
+        "version_value": "Version %s",
+        "not_available": "Not available",
+        "developer": "Developer %s",
+        "bundle": "Bundle %s",
+        "category": "Category %s  |  ",
+        "no_app_selected": "No app selected. Double-click an app in App Search first.",
+        "history_mode_label": "Version ID source:",
+        "load_history": "Load version history",
+        "select_all": "Select all",
+        "invert": "Invert",
+        "download_selected": "Download selected",
+        "cancel_select_all": "Clear selection",
+        "choose_app_title": "Notice",
+        "choose_app_message": "Please select an app by double-clicking it in App Search first.",
+        "current_app": "Current app: %s  (Bundle %s  |  App ID %s)",
+        "history_count": "%s  %d historical version(s) (check or double-click a row to download).",
+        "history_failed": "Failed to get version history",
+        "load_failed": "Load failed",
+        "fetch_on_download": "Fetch on download",
+        "reading_size": "Reading",
+        "overall_progress": "Overall %d%% (%d / %d completed)",
+        "active_waiting": "Downloading %d, waiting %d",
+        "recent_complete": "The most recent download task completed",
+        "download_failed_hint": "A download failed. Click Retry to try again.",
+        "download_closed": "Download window closed",
+        "empty_queue_title": "Notice",
+        "empty_queue_message": "The download queue is empty. Select or double-click a version in Version History first.",
+        "install_header": "Downloaded packages (folder: %s):",
+        "open_folder": "Open folder",
+        "delete_selected": "Delete selected",
+        "clear_all": "Clear all",
+        "refresh": "Refresh",
+        "install_tip": "Install on an iPhone:\n1. Offload the app on the phone (Settings → General → iPhone Storage → Offload App) to keep its data.\n2. On the computer, use iMazing 3.4.0 or another IPA installer to import the IPA above.\n3. After installation, turn off App Updates in Settings → App Store to avoid an automatic upgrade.\nDouble-click an item to open its folder; use multi-select and Delete selected; right-click for folder, delete, or copy-path actions.",
+        "no_downloaded_ipa": "(No downloaded IPA yet. Start a download from Downloads.)",
+        "open_folder_context": "Open containing folder",
+        "copy_path": "Copy path",
+        "delete": "Delete",
+        "path_copied": "Path copied:\n%s",
+        "confirm_delete_one": "Delete this IPA?\n%s",
+        "delete_failed": "Delete failed",
+        "select_packages": "Select at least one package first (Ctrl / Shift can select multiple).",
+        "confirm_delete_many": "Delete these %d packages?\n\n%s\n\nThis cannot be undone.",
+        "partial_delete_failed": "Some deletions failed",
+        "deleted_packages": "%d package(s) deleted.",
+        "nothing_to_clear": "There are no packages to clear.",
+        "confirm_clear": "Clear all %d packages?\n\nFolder: %s\n\nThis cannot be undone.",
+        "clear_result": "Cleared; %d package(s) could not be deleted.",
+        "cleared_packages": "%d package(s) cleared.",
     },
 }
 
@@ -453,6 +575,11 @@ def current_language():
 def tr(key):
     lang = current_language()
     return TRANSLATIONS.get(lang, TRANSLATIONS["zh"]).get(key, key)
+
+
+def localized(zh, en):
+    """Return a short runtime message in the currently selected language."""
+    return en if current_language() == "en" else zh
 
 
 def region_name(code):
@@ -789,7 +916,7 @@ class MacStyleMessageBox(QDialog):
         self.title = title
         self.message = message
         self.icon_type = icon_type
-        self.btn_labels = buttons or ["确定"]
+        self.btn_labels = buttons or [tr("ok")]
         self.rich_message = bool(rich_message)
         self._setup_ui()
 
@@ -827,7 +954,7 @@ class MacStyleMessageBox(QDialog):
         for label in self.btn_labels:
             btn = QPushButton(label)
             btn.setFixedSize(90, 34)
-            if label in ("取消", "否"):
+            if label in ("取消", "否", "Cancel", "No"):
                 btn.setStyleSheet(cancel_style)
                 btn.clicked.connect(self.reject)
             else:
@@ -1010,11 +1137,12 @@ class SettingsDialog(QDialog):
                     self._login_busy = False
                     self.login_btn.setEnabled(True)
                     self.login_btn.setText(tr("login"))
-                    self.status_card.setText(("Sign-in error; the app remained open.<br>%s" if current_language() == "en"
-                                              else "登录处理发生异常，已阻止程序退出。<br>%s") % _ht(exc))
-                    MacStyleMessageBox(self, title=("Sign-in error" if current_language() == "en" else "登录处理异常"),
-                                       message=(("The app remained open.\n\n%s" if current_language() == "en"
-                                                 else "已阻止软件闪退。\n\n%s") % str(exc)),
+                    self.status_card.setText(localized(
+                        "登录处理发生异常，已阻止程序退出。<br>%s",
+                        "Sign-in error; the app remained open.<br>%s") % _ht(exc))
+                    MacStyleMessageBox(self, title=localized("登录处理异常", "Sign-in error"),
+                                       message=(localized("已阻止软件闪退。\n\n%s",
+                                                          "The app remained open.\n\n%s") % str(exc)),
                                        icon_type="warning").exec()
                 except Exception:
                     pass
@@ -1087,7 +1215,8 @@ class SettingsDialog(QDialog):
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
         mode_row.addWidget(self._field_label("backend_label"))
-        mode_label = QLabel("官方 Kosthi/ipatool-rs v0.1.8")
+        mode_label = QLabel(localized("官方 Kosthi/ipatool-rs v0.1.8",
+                                     "Official Kosthi/ipatool-rs v0.1.8"))
         mode_label.setStyleSheet(
             "QLabel{font-size:13px;color:#333;background:rgba(255,255,255,70);"
             "border-radius:8px;padding:8px 12px;}")
@@ -1331,8 +1460,9 @@ class SettingsDialog(QDialog):
             self.login_btn.setText(tr("confirm_login"))
             self.logout_btn.setEnabled(False)
             self.twofa_btn.setEnabled(False)
-            self.status_card.setText(("Authentication accepted<br>Confirming account status..." if current_language() == "en"
-                                      else "认证已通过<br>正在确认账号登录状态，请稍候。"))
+            self.status_card.setText(localized(
+                "认证已通过<br>正在确认账号登录状态，请稍候。",
+                "Authentication accepted<br>Confirming account status..."))
             self._run_tool_async(
                 ["auth", "info", "--format", "json"],
                 lambda info_rc, info_out: self._on_login_verified(info_rc, info_out, bool(had_code)),
@@ -1342,41 +1472,60 @@ class SettingsDialog(QDialog):
         self._login_phase = "idle"
 
         if rc == -1:
-            MacStyleMessageBox(self, title="软件组件异常",
-                               message="登录组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
+            MacStyleMessageBox(self, title=tr("component_error_title"),
+                               message=tr("component_error_message"),
                                icon_type="warning").exec()
             self._refresh_status()
             return
 
         if rc == -2:
-            MacStyleMessageBox(self, title="登录超时",
-                               message="连接 Apple 服务器超时（90 秒）。\n请检查网络或代理后重试。",
+            MacStyleMessageBox(self, title=localized("登录超时", "Sign-in timed out"),
+                               message=localized("连接 Apple 服务器超时（90 秒）。\n请检查网络或代理后重试。",
+                                                 "The connection to Apple timed out after 90 seconds.\n"
+                                                 "Check your network or proxy and try again."),
                                icon_type="warning").exec()
-            self.status_card.setText("登录超时<br>请检查网络后重试。")
+            self.status_card.setText(localized("登录超时<br>请检查网络后重试。",
+                                               "Sign-in timed out<br>Check your network and try again."))
             return
 
         if "403" in low or "forbidden" in low:
             tail = (out or "")[-600:]
-            self.status_card.setText("Apple 服务器返回 403 拒绝<br>请查看下方说明。")
-            MacStyleMessageBox(self, title="登录被服务器拒绝 (403)",
-                               message=("Apple 认证服务器返回 HTTP 403（拒绝访问）。常见原因与排查：\n\n"
-                                        "1. 该 Apple ID 可能需要在 appleid.apple.com 网页端处理（如同意新条款、解锁账号、验证支付方式）。\n"
-                                        "2. 系统代理 / VPN / 防火墙可能拦截或改写了对 Apple 的请求，尝试关闭代理后再登录。\n"
-                                        "3. Apple 对该账号或网络存在临时风控，可稍后重试或更换网络。\n\n"
-                                        "原始错误：\n%s" % tail),
+            self.status_card.setText(localized("Apple 服务器返回 403 拒绝<br>请查看下方说明。",
+                                               "Apple returned HTTP 403 (Forbidden)<br>See the details below."))
+            MacStyleMessageBox(self, title=localized("登录被服务器拒绝 (403)", "Sign-in rejected (403)"),
+                               message=localized(
+                                   "Apple 认证服务器返回 HTTP 403（拒绝访问）。常见原因与排查：\n\n"
+                                   "1. 该 Apple ID 可能需要在 appleid.apple.com 网页端处理（如同意新条款、解锁账号、验证支付方式）。\n"
+                                   "2. 系统代理 / VPN / 防火墙可能拦截或改写了对 Apple 的请求，尝试关闭代理后再登录。\n"
+                                   "3. Apple 对该账号或网络存在临时风控，可稍后重试或更换网络。\n\n"
+                                   "原始错误：\n%s",
+                                   "Apple returned HTTP 403 (Forbidden). Common causes:\n\n"
+                                   "1. The Apple ID may need attention at appleid.apple.com (new terms, account unlock, or payment verification).\n"
+                                   "2. A system proxy, VPN, or firewall may be blocking or rewriting Apple requests.\n"
+                                   "3. Apple may be applying temporary risk controls to this account or network. Try again later or use another network.\n\n"
+                                   "Raw error:\n%s") % tail,
                                icon_type="warning").exec()
             self._refresh_status()
             return
 
         if "something went wrong" in low or "unknown error" in low or "an error occurred" in low:
             tail = (out or "")[-1200:]
-            self.status_card.setText("Apple 返回通用错误：something went wrong<br>请查看下方排查。")
-            MacStyleMessageBox(self, title="登录被拒绝（Apple 通用错误）",
-                               message=("Apple 认证服务返回了通用错误 \"Something went wrong\"，通常无法由软件侧修复，根因在账号或网络层面：\n\n"
-                                        "1. 优先排查账号：用浏览器打开 appleid.apple.com 登录该 Apple ID，按页面红色提示处理（同意新条款、验证支付方式、解锁账号），处理完再回本软件登录。\n"
-                                        "2. 关闭系统代理 / VPN / 加速器后重试，避免请求被中间网络拦截或改写。\n"
-                                        "3. 换网络（如手机热点）重试，排除本机网络风控。\n\n"
-                                        "原始错误：\n%s" % tail),
+            self.status_card.setText(localized(
+                "Apple 返回通用错误：something went wrong<br>请查看下方排查。",
+                "Apple returned a generic error: something went wrong<br>See the details below."))
+            MacStyleMessageBox(self, title=localized("登录被拒绝（Apple 通用错误）",
+                                                      "Sign-in rejected (Apple generic error)"),
+                               message=localized(
+                                   "Apple 认证服务返回了通用错误 \"Something went wrong\"，通常无法由软件侧修复，根因在账号或网络层面：\n\n"
+                                   "1. 优先排查账号：用浏览器打开 appleid.apple.com 登录该 Apple ID，按页面红色提示处理（同意新条款、验证支付方式、解锁账号），处理完再回本软件登录。\n"
+                                   "2. 关闭系统代理 / VPN / 加速器后重试，避免请求被中间网络拦截或改写。\n"
+                                   "3. 换网络（如手机热点）重试，排除本机网络风控。\n\n"
+                                   "原始错误：\n%s",
+                                   "Apple returned the generic error \"Something went wrong\". This is usually caused by the account or network rather than the app:\n\n"
+                                   "1. Check the account at appleid.apple.com and follow any red prompts (terms, payment verification, or unlock).\n"
+                                   "2. Retry with system proxy, VPN, or accelerator disabled to avoid request rewriting.\n"
+                                   "3. Try another network, such as a phone hotspot.\n\n"
+                                   "Raw error:\n%s") % tail,
                                icon_type="warning").exec()
             self._refresh_status()
             return
@@ -1385,10 +1534,15 @@ class SettingsDialog(QDialog):
                                   "start apple sap runtime", "create unicorn engine",
                                   "load unicorn", "download unicorn")):
             tail = (out or "")[-500:]
-            message = ("Apple 登录尚未进入验证码步骤，软件内部认证组件初始化失败。\n\n"
-                       "请重新启动软件后再试。若仍失败，请将下方错误内容一并反馈。\n\n%s" % tail)
-            self.status_card.setText("安全运行时初始化失败<br>请检查网络或代理后重试。<br><br>%s" % _ht(tail))
-            MacStyleMessageBox(self, title="登录环境初始化失败", message=message,
+            message = localized(
+                "Apple 登录尚未进入验证码步骤，软件内部认证组件初始化失败。\n\n"
+                "请重新启动软件后再试。若仍失败，请将下方错误内容一并反馈。\n\n%s",
+                "Apple sign-in did not reach the verification-code step because the internal sign-in component failed to initialize.\n\n"
+                "Restart the app and try again. If it still fails, include the error below when reporting it.\n\n%s") % tail
+            self.status_card.setText(localized(
+                "安全运行时初始化失败<br>请检查网络或代理后重试。<br><br>%s",
+                "Secure sign-in runtime failed to initialize<br>Check your network or proxy and try again.<br><br>%s") % _ht(tail))
+            MacStyleMessageBox(self, title=localized("登录环境初始化失败", "Sign-in environment failed"), message=message,
                                icon_type="warning").exec()
             self._refresh_status()
             return
@@ -1396,15 +1550,25 @@ class SettingsDialog(QDialog):
         if any(k in low for k in ("proxy", "dial tcp", "connection refused", "no such host",
                                   "i/o timeout", "bag.xml", "network is unreachable",
                                   "tls handshake", "certificate")):
-            MacStyleMessageBox(self, title="网络连接失败",
-                               message="无法连接 Apple 服务器。\n\n"
-                                       "请依次检查：\n"
-                                       "1. 电脑网络是否正常\n"
-                                       "2. 系统代理 / VPN 是否可用\n"
-                                       "3. 防火墙是否拦截了本软件\n\n"
-                                       "错误详情：\n%s" % _friendly_auth_error(out),
+            MacStyleMessageBox(self, title=localized("网络连接失败", "Network connection failed"),
+                               message=localized(
+                                   "无法连接 Apple 服务器。\n\n"
+                                   "请依次检查：\n"
+                                   "1. 电脑网络是否正常\n"
+                                   "2. 系统代理 / VPN 是否可用\n"
+                                   "3. 防火墙是否拦截了本软件\n\n"
+                                   "错误详情：\n%s",
+                                   "Could not connect to Apple services.\n\n"
+                                   "Check:\n"
+                                   "1. Whether the computer network works\n"
+                                   "2. Whether the system proxy / VPN works\n"
+                                   "3. Whether the firewall is blocking this app\n\n"
+                                   "Details:\n%s") % _friendly_auth_error(out),
                                icon_type="warning").exec()
-            self.status_card.setText("网络连接失败<br>请检查网络或代理设置后重试。<br><br>%s" % _ht((out or "")[-300:]))
+            self.status_card.setText(localized(
+                "网络连接失败<br>请检查网络或代理设置后重试。<br><br>%s",
+                "Network connection failed<br>Check the network or proxy and try again.<br><br>%s")
+                                      % _ht((out or "")[-300:]))
             return
 
         if _is_transient_apple_edge_error(out):
@@ -1415,17 +1579,22 @@ class SettingsDialog(QDialog):
             if had_code:
                 self._login_phase = "waiting_code"
                 self.twofa_row_widget.setVisible(True)
-            self.status_card.setText("登录失败%s<br><br>%s" %
-                                     ("（验证码可能有误或已过期）" if had_code else "",
-                                      _ht(_friendly_auth_error(out))))
-            MacStyleMessageBox(self, title="登录失败",
-                               message=("验证码可能有误或已过期，请输入新验证码后重试。" if had_code else
+            code_note = localized("（验证码可能有误或已过期）", " (the code may be invalid or expired)") if had_code else ""
+            self.status_card.setText(localized("登录失败%s<br><br>%s",
+                                               "Sign-in failed%s<br><br>%s") %
+                                     (code_note, _ht(_friendly_auth_error(out))))
+            MacStyleMessageBox(self, title=localized("登录失败", "Sign-in failed"),
+                               message=(localized("验证码可能有误或已过期，请输入新验证码后重试。",
+                                                  "The verification code may be invalid or expired. Enter a new code and try again.") if had_code else
                                         _friendly_auth_error(out)),
                                icon_type="warning").exec()
         else:
-            self.status_card.setText("登录未完成<br>%s" % _ht(_friendly_auth_error(out)))
-            MacStyleMessageBox(self, title="登录未完成",
-                               message=_friendly_auth_error(out) + "\n\n原始输出（请复制反馈）：\n" + (out or "")[:1500],
+            self.status_card.setText(localized("登录未完成<br>%s", "Sign-in did not complete<br>%s")
+                                     % _ht(_friendly_auth_error(out)))
+            MacStyleMessageBox(self, title=localized("登录未完成", "Sign-in did not complete"),
+                               message=_friendly_auth_error(out) + "\n\n" +
+                                       localized("原始输出（请复制反馈）：\n", "Raw output (copy this when reporting):\n") +
+                                       (out or "")[:1500],
                                icon_type="warning").exec()
 
     def _on_login_verified(self, rc, out, had_code):
@@ -1433,13 +1602,13 @@ class SettingsDialog(QDialog):
                     (rc, bool(had_code), len(out or "")))
         self._login_busy = False
         self.login_btn.setEnabled(True)
-        self.login_btn.setText("登录 / 重新登录")
+        self.login_btn.setText(tr("login"))
         self.logout_btn.setEnabled(True)
         self.twofa_btn.setEnabled(True)
         logged, _, who = _auth_result(rc, out)
         if logged:
             self._login_phase = "idle"
-            self.status_card.setText("当前状态：已登录<br>账号：%s" % _ht(who or self.email_edit.text().strip()))
+            self.status_card.setText(tr("status_logged") + _ht(who or self.email_edit.text().strip()))
             parent = self.parent()
             if parent is not None and hasattr(parent, "_on_login_status"):
                 parent._on_login_status(rc, out)
@@ -1453,9 +1622,13 @@ class SettingsDialog(QDialog):
             return
         self._login_phase = "waiting_code" if had_code else "idle"
         self.twofa_row_widget.setVisible(bool(had_code))
-        message = "认证请求已返回，但账号状态确认失败，因此没有判定为登录成功。\n\n%s" % _friendly_auth_error(out)
-        self.status_card.setText("认证请求已返回，但账号状态确认失败，因此没有判定为登录成功。<br><br>%s" % _ht(_friendly_auth_error(out)))
-        MacStyleMessageBox(self, title="登录未完成", message=message, icon_type="warning").exec()
+        message = localized(
+            "认证请求已返回，但账号状态确认失败，因此没有判定为登录成功。\n\n%s",
+            "The authentication request returned, but the account status could not be confirmed, so sign-in was not marked successful.\n\n%s") % _friendly_auth_error(out)
+        self.status_card.setText(localized(
+            "认证请求已返回，但账号状态确认失败，因此没有判定为登录成功。<br><br>%s",
+            "The authentication request returned, but the account status could not be confirmed.<br><br>%s") % _ht(_friendly_auth_error(out)))
+        MacStyleMessageBox(self, title=localized("登录未完成", "Sign-in did not complete"), message=message, icon_type="warning").exec()
 
     def _do_login_with_2fa(self):
         email = self.email_edit.text().strip()
@@ -1474,7 +1647,9 @@ class SettingsDialog(QDialog):
         if getattr(self, "_logout_busy", False):
             return
         if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
-            MacStyleMessageBox(self, title="软件组件异常", message="注销组件缺失，请重新下载完整的软件。",
+            MacStyleMessageBox(self, title=tr("component_error_title"),
+                               message=localized("注销组件缺失，请重新下载完整的软件。",
+                                                 "The sign-out component is missing. Download the complete package again."),
                                icon_type="warning").exec()
             return
         self._logout_busy = True
@@ -1482,7 +1657,7 @@ class SettingsDialog(QDialog):
         self.logout_btn.setEnabled(False)
         self.logout_btn.setText(tr("logout_progress"))
         self.login_btn.setEnabled(False)
-        self.status_card.setText("Signing out..." if current_language() == "en" else "正在注销...")
+        self.status_card.setText(localized("正在注销...", "Signing out..."))
         self._run_tool_async(["auth", "revoke", "--format", "json"], self._on_logout_done, timeout=60)
 
     def _on_logout_done(self, rc, out):
@@ -1506,10 +1681,13 @@ class SettingsDialog(QDialog):
             MacStyleMessageBox(self, title=tr("logged_out_title"), message=tr("logged_out_message"), icon_type="success").exec()
         elif any(k in low for k in ("not logged", "not authenticated", "could not find",
                                     "no session", "keychain", "not signed")):
-            MacStyleMessageBox(self, title="提示", message="当前未登录或凭据已失效。", icon_type="info").exec()
+            MacStyleMessageBox(self, title=tr("choose_app_title"),
+                               message=localized("当前未登录或凭据已失效。", "You are not signed in or the credentials have expired."),
+                               icon_type="info").exec()
         else:
-            MacStyleMessageBox(self, title="注销结果",
-                               message="返回码 %s\n%s" % (rc, (out or "")[-400:]),
+            MacStyleMessageBox(self, title=localized("注销结果", "Sign-out result"),
+                               message=localized("返回码 %s\n%s", "Return code %s\n%s") %
+                                       (rc, (out or "")[-400:]),
                                icon_type="info").exec()
         self._refresh_status()
 
@@ -1521,7 +1699,8 @@ class SettingsDialog(QDialog):
 
     def _change_dir(self):
         global IPAS_DIR
-        d = QFileDialog.getExistingDirectory(self, "选择下载目录", IPAS_DIR)
+        d = QFileDialog.getExistingDirectory(
+            self, localized("选择下载目录", "Choose download folder"), IPAS_DIR)
         if d:
             IPAS_DIR = d
             self.dir_lbl.setText(d)
@@ -1540,31 +1719,43 @@ class SettingsDialog(QDialog):
         if thread is not None and thread.isRunning():
             return
         self.diag_btn.setEnabled(False)
-        self.diag_btn.setText("诊断中…")
-        self.diag_hint.setText("正在检测 Apple 各端点，约需十几秒…")
+        self.diag_btn.setText(tr("diagnosing"))
+        self.diag_hint.setText(localized("正在检测 Apple 各端点，约需十几秒…",
+                                         "Checking Apple endpoints; this may take a few seconds..."))
         self._diag_thread = NetworkDiagWorker()
         self._diag_thread.done.connect(self._on_network_diag_done)
         self._diag_thread.start()
 
     def _on_network_diag_done(self, results):
         self.diag_btn.setEnabled(True)
-        self.diag_btn.setText("开始诊断")
-        self.diag_hint.setText("检测当前网络能否通过 Apple 登录认证")
+        self.diag_btn.setText(tr("start_diag"))
+        self.diag_hint.setText(tr("diag_hint"))
         proxy = _resolve_proxy()
-        route = "走代理：%s" % proxy if proxy else "直连（当前未使用代理）"
+        route = (localized("走代理：%s", "Proxy: %s") % proxy
+                 if proxy else localized("直连（当前未使用代理）", "Direct connection (no proxy)"))
+        label_names = {
+            "商店配置 bag": localized("商店配置 bag", "Store configuration bag"),
+            "认证端点（传统）": localized("认证端点（传统）", "Legacy sign-in endpoint"),
+            "认证端点（新版）": localized("认证端点（新版）", "Native sign-in endpoint"),
+            "应用查询接口": localized("应用查询接口", "App lookup API"),
+        }
         lines = [route, ""]
         for item in results:
+            label = label_names.get(item["label"], item["label"])
             if item["error"]:
-                lines.append("● %s：连接失败（%s，%dms）"
-                             % (item["label"], item["error"][:60], item["ms"]))
+                lines.append(localized("● %s：连接失败（%s，%dms）",
+                                       "● %s: connection failed (%s, %d ms)")
+                             % (label, item["error"][:60], item["ms"]))
             else:
-                extra = "，已返回跳转地址" if item.get("location") else ""
-                lines.append("● %s：HTTP %d（%dms）%s"
-                             % (item["label"], item["status"], item["ms"], extra))
+                extra = localized("，已返回跳转地址", ", redirect received") if item.get("location") else ""
+                lines.append(localized("● %s：HTTP %d（%dms）%s",
+                                       "● %s: HTTP %d (%d ms)%s")
+                             % (label, item["status"], item["ms"], extra))
         lines.append("")
         level, conclusion = _diag_conclusion(results)
         lines.append(conclusion)
-        MacStyleMessageBox(self, title="网络诊断结果", message="\n".join(lines),
+        MacStyleMessageBox(self, title=localized("网络诊断结果", "Network check result"),
+                           message="\n".join(lines),
                            icon_type="success" if level == "ok" else "warning").exec()
 
     def mousePressEvent(self, event):
@@ -1655,6 +1846,28 @@ def _http_get_bytes(url, timeout=25):
     raise urllib.error.URLError("Apple 接口没有可用线路")
 
 
+def _get_cached_icon(url):
+    """Fetch a search result icon once and reuse it across repeated searches."""
+    address = str(url or "").strip()
+    if not address:
+        return None
+    with _ICON_CACHE_LOCK:
+        cached = _ICON_CACHE.get(address)
+    if cached is not None:
+        return cached
+    try:
+        data = _http_get_bytes(address, timeout=15)
+    except Exception:
+        return None
+    if not data:
+        return None
+    with _ICON_CACHE_LOCK:
+        if len(_ICON_CACHE) >= _ICON_CACHE_LIMIT:
+            _ICON_CACHE.pop(next(iter(_ICON_CACHE)))
+        _ICON_CACHE[address] = data
+    return data
+
+
 def _http_get_json(url, timeout=25):
     data = _http_get_bytes(url, timeout=timeout)
     try:
@@ -1669,7 +1882,7 @@ def safe_filename(name, version, app_id):
 def format_size(b):
     if not b:
         # Apple 的历史接口经常不公开旧 IPA 的大小，下载时会用实际文件大小补齐。
-        return "下载时获取"
+        return tr("fetch_on_download")
     b = float(b)
     if b >= 1073741824:
         return "%.2f GB" % (b / 1073741824)
@@ -1719,7 +1932,8 @@ def api_search_apps(keyword, country="cn", limit=50):
             "rating": r.get("averageUserRating", 0),
             "rating_count": r.get("userRatingCount", 0),
             "track_view_url": r.get("trackViewUrl", ""),
-            "price": r.get("formattedPrice", "") or ("免费" if not r.get("price") else str(r.get("price"))),
+            "price": r.get("formattedPrice", "") or
+                     (tr("free") if not r.get("price") else str(r.get("price"))),
             "genres": ", ".join(r.get("genres", []) or []),
             "description": (r.get("description", "") or "").replace("\n", " ").strip(),
             "release_date": (r.get("currentVersionReleaseDate", "") or "")[:19].replace("T", " "),
@@ -1796,9 +2010,9 @@ def api_fetch_history_apple(app_id):
     for row in rows:
         meta = metadata_by_id.get(str(row["external_id"]))
         if not meta:
-            row["version"] = row.get("version") or "待获取"
+            row["version"] = row.get("version") or tr("not_available")
             continue
-        row["version"] = str(meta.get("version") or row.get("version") or "待获取")
+        row["version"] = str(meta.get("version") or row.get("version") or tr("not_available"))
         row["date"] = str(meta.get("date") or "")
         row["size"] = meta.get("size") or 0
     return rows
@@ -2277,8 +2491,6 @@ def _windows_system_proxy():
         return ""
 
 
-_LOCAL_PROXY_PORTS = (7890, 7897, 7891, 10809, 10808, 1080, 1081,
-                      8889, 8888, 2080, 3128, 8080, 20171)
 _local_proxy_cache = None
 
 
@@ -2297,11 +2509,9 @@ def _http_proxy_for_ipatool(proxy_url):
         return proxy_url
     if not low.startswith("socks"):
         return proxy_url
-    parsed = urllib.parse.urlparse(proxy_url)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 1080
-    if _port_open(host, port, timeout=0.4):
-        return "http://%s:%d" % (host, port)
+    # HTTP_PROXY/HTTPS_PROXY accepts an HTTP proxy URL here.  A SOCKS
+    # endpoint must not be mislabeled as HTTP; doing so causes confusing
+    # connection resets and was the source of several failed sign-ins.
     return ""
 
 
@@ -2715,14 +2925,14 @@ def _diag_conclusion(results):
 
     blocked_status = (204, 301, 404, 503)
     if all(item["error"] for item in results):
-        return ("blocked", "当前网络完全无法连通 Apple 服务。\n"
-                           "请检查：① 代理地址与端口是否正确；② 代理软件是否已开启；"
-                           "③ 防火墙是否拦截。")
+        return ("blocked", localized(
+            "当前网络完全无法连通 Apple 服务。\n请检查：① 代理地址与端口是否正确；② 代理软件是否已开启；③ 防火墙是否拦截。",
+            "This network cannot reach Apple services.\nCheck the proxy address and port, whether the proxy is running, and whether a firewall is blocking the app."))
 
     if bag and not bag["error"] and bag["status"] != 200:
-        return ("blocked", "Apple 商店配置接口返回 HTTP %d，当前网络出口不被 Apple 接受。\n"
-                           "建议更换代理节点（优先选择美国 / 日本 / 香港等海外节点）后重新诊断。"
-                % bag["status"])
+        return ("blocked", localized(
+            "Apple 商店配置接口返回 HTTP %d，当前网络出口不被 Apple 接受。\n建议更换代理节点（优先选择美国 / 日本 / 香港等海外节点）后重新诊断。",
+            "Apple's store configuration endpoint returned HTTP %d, so this network exit was not accepted.\nTry another proxy route and run the check again.") % bag["status"])
 
     auth_ok = False
     if legacy and not legacy["error"]:
@@ -2737,27 +2947,29 @@ def _diag_conclusion(results):
             detail.append("传统认证端点已正常返回跳转地址")
         if native and native["status"] in (200, 302):
             detail.append("新版认证端点响应正常")
-        suffix = "（%s）" % "、".join(detail) if detail else ""
-        return ("ok", "网络检查通过，Apple 登录认证链路可用%s。\n"
-                      "可以直接回到主界面登录；若仍失败，多为账号本身需要验证码或条款确认。" % suffix)
+        suffix = ("（%s）" % "、".join(detail)) if detail else ""
+        suffix_en = (" (%s)" % ", ".join(
+            "legacy sign-in endpoint returned a redirect" if "传统" in item else
+            "native sign-in endpoint responded normally" for item in detail)) if detail else ""
+        return ("ok", localized(
+            "网络检查通过，Apple 登录认证链路可用%s。\n可以直接回到主界面登录；若仍失败，多为账号本身需要验证码或条款确认。" % suffix,
+            "Network check passed; Apple sign-in is reachable%s.\nReturn to the main window and sign in. If it still fails, the account may need a code or terms confirmation." % suffix_en))
 
     rejected = []
     for item in (legacy, native):
         if item and not item["error"] and item["status"] in blocked_status:
             rejected.append("%s HTTP %d" % (item["host"], item["status"]))
     if rejected:
-        return ("blocked", "Apple 认证服务拒绝了当前网络出口：%s。\n"
-                           "这正是登录报「something went wrong」/「failed to retrieve redirect location」的原因。\n\n"
-                           "解决办法：在上方「代理」里填入一个海外代理节点（美国 / 日本 / 新加坡等），"
-                           "保存后重新诊断，直到这里显示「认证端点」正常，再登录。"
-                % "、".join(rejected))
+        return ("blocked", localized(
+            "Apple 认证服务拒绝了当前网络出口：%s。\n这正是登录报「something went wrong」/「failed to retrieve redirect location」的原因。\n\n解决办法：在上方「代理」里填入一个海外代理节点（美国 / 日本 / 新加坡等），保存后重新诊断，直到这里显示「认证端点」正常，再登录。",
+            "Apple's sign-in service rejected this network exit: %s.\nThis causes errors such as \"something went wrong\" or \"failed to retrieve redirect location\".\n\nUse a working overseas proxy route, run the check again, and sign in after the endpoint passes.") % ", ".join(rejected))
 
     if lookup and lookup["error"]:
-        return ("blocked", "应用查询接口无法连通（%s）。\n"
-                           "请更换代理节点后重新诊断。" % lookup["error"])
+        return ("blocked", localized("应用查询接口无法连通（%s）。\n请更换代理节点后重新诊断。",
+                                     "The app lookup API is unreachable (%s).\nTry another proxy route and run the check again.") % lookup["error"])
 
-    return ("warning", "各端点响应存在异常，建议更换代理节点后重新诊断；"
-                       "若多次仍失败，请把诊断结果截图反馈。")
+    return ("warning", localized("各端点响应存在异常，建议更换代理节点后重新诊断；若多次仍失败，请把诊断结果截图反馈。",
+                                 "Some endpoints responded unexpectedly. Try another proxy route and run the check again; if it still fails, share a screenshot of the result."))
 
 
 def _prepare_engine_home():
@@ -2923,19 +3135,17 @@ def _route_summary():
         routes = [""]
     names = []
     for value in routes:
-        label = value if value else "直连"
+        label = value if value else localized("直连", "Direct")
         if label not in names:
             names.append(label)
-    return "、".join(names)
+    return localized("、", ", ").join(names)
 
 
 def _network_blocked_tip():
     tried = len(_LAST_LOGIN_ROUTES) or 1
-    return ("\n\n本软件已自动轮换「系统代理 / 本机已监听的代理端口 / 直连」共 %d 条线路依次重试，"
-            "全部被 Apple 认证服务拒绝或超时。\n"
-            "这属于 Apple 对当前网络环境的间歇性限制（同一条线路时好时坏），不是账号问题。\n"
-            "建议：等 1～2 分钟后直接再点一次「登录」，软件会自动重新轮换线路重试；"
-            "也可以改用手机热点（4G/5G）后再试。" % tried)
+    return localized(
+        "\n\n本软件已自动轮换「系统代理 / 本机已监听的代理端口 / 直连」共 %d 条线路依次重试，全部被 Apple 认证服务拒绝或超时。\n这属于 Apple 对当前网络环境的间歇性限制（同一条线路时好时坏），不是账号问题。\n建议：等 1～2 分钟后直接再点一次「登录」，软件会自动重新轮换线路重试；也可以改用手机热点（4G/5G）后再试。",
+        "\n\nThe app automatically retried %d routes (system proxy, local proxy ports, and direct connection), but Apple rejected or timed out on all of them.\nThis is an intermittent restriction on the current network environment, not necessarily an account problem.\nWait 1–2 minutes and try again; a phone hotspot may also help.") % tried
 
 
 def _friendly_auth_error(out):
@@ -2943,20 +3153,21 @@ def _friendly_auth_error(out):
     low = text.lower()
     if ("failed to retrieve redirect location" in low
             or "something went wrong" in low):
-        return ("Apple 认证服务拒绝了当前网络出口"
-                "（软件已自动尝试：%s）。\n"
-                "这是 Apple 对大陆网络的已知限制，不是你的账号问题。%s"
-                % (_route_summary(), _network_blocked_tip()))
+        return localized(
+            "Apple 认证服务拒绝了当前网络出口（软件已自动尝试：%s）。\n这是 Apple 对大陆网络的已知限制，不是你的账号问题。%s",
+            "Apple rejected the current network exit (routes tried: %s).\nThis is a known restriction affecting some mainland-China networks and is not necessarily an account problem.%s") % (_route_summary(), _network_blocked_tip())
     if _is_transient_apple_edge_error(text):
-        return ("Apple 认证服务未返回有效响应，当前网络出口被限制"
-                "（软件已自动尝试：%s，仍未通过）。%s"
-                % (_route_summary(), _network_blocked_tip()))
+        return localized(
+            "Apple 认证服务未返回有效响应，当前网络出口被限制（软件已自动尝试：%s，仍未通过）。%s",
+            "Apple did not return a valid response; the current network exit may be restricted (routes tried: %s).%s") % (_route_summary(), _network_blocked_tip())
     if "failed to establish a sap signing session" in low:
-        return "Apple 安全登录组件初始化失败，请检查网络后重新登录。"
+        return localized("Apple 安全登录组件初始化失败，请检查网络后重新登录。",
+                         "Apple's secure sign-in component failed to initialize. Check the network and try again.")
     if "not logged in" in low:
-        return "当前尚未登录。"
+        return localized("当前尚未登录。", "You are not signed in.")
     if "login rejected" in low and "auth-code" in low:
-        return "Apple 要求继续验证。若设备已收到验证码，请输入 6 位验证码后提交。"
+        return localized("Apple 要求继续验证。若设备已收到验证码，请输入 6 位验证码后提交。",
+                         "Apple requires additional verification. If your trusted device received a code, enter the 6-digit code and submit it.")
     messages = []
     for record in _json_records(text):
         if isinstance(record, dict):
@@ -2965,7 +3176,8 @@ def _friendly_auth_error(out):
                 messages.append(value)
     if messages:
         return "\n".join(messages)[-500:]
-    return text[-500:] or "没有收到可确认的登录结果，请重新尝试。"
+    return text[-500:] or localized("没有收到可确认的登录结果，请重新尝试。",
+                                    "No confirmable sign-in result was received. Try again.")
 
 
 def _is_transient_apple_edge_error(out):
@@ -2991,7 +3203,7 @@ def _redact_engine_output(out):
         r'\1"***"', value, flags=re.IGNORECASE)
 
 
-def run_tool(args, timeout=120, login_retries=1):
+def run_tool(args, timeout=120):
     tool = IPATOOL_PATH
     if not tool or not os.path.exists(tool):
         return -1, "ipatool.exe not found"
@@ -3010,6 +3222,7 @@ def run_tool(args, timeout=120, login_retries=1):
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     errors="replace",
                     timeout=timeout,
                     env=_ipatool_env(for_login=is_login, proxy=proxy),
@@ -3102,24 +3315,38 @@ class SearchWorker(QThread):
         self.signals = WorkerSignals()
         self._stop = False
 
+    def stop(self):
+        self._stop = True
+
     def run(self):
         try:
             self.signals.progress.emit(0, 1)
             apps = api_search_apps(self.keyword, self.country, limit=self.limit)
+            if self._stop:
+                return
+            targets = [a for a in apps if a.get("icon_100")]
             for a in apps:
-                if self._stop:
-                    break
-                if a.get("icon_100"):
-                    try:
-                        a["icon_bytes"] = _http_get_bytes(a["icon_100"], timeout=15)
-                    except Exception:
-                        a["icon_bytes"] = None
-                else:
-                    a["icon_bytes"] = None
+                a["icon_bytes"] = None
+            if targets:
+                with ThreadPoolExecutor(
+                        max_workers=min(8, len(targets)),
+                        thread_name_prefix="app-icon") as pool:
+                    futures = {
+                        pool.submit(_get_cached_icon, a.get("icon_100")): a
+                        for a in targets
+                    }
+                    for future in as_completed(futures):
+                        if self._stop:
+                            break
+                        app = futures[future]
+                        try:
+                            app["icon_bytes"] = future.result()
+                        except Exception:
+                            app["icon_bytes"] = None
             if not self._stop:
                 self.signals.data.emit(apps)
         except Exception as e:
-            self.signals.error.emit("搜索失败：%s" % e)
+            self.signals.error.emit(str(e))
         finally:
             self.signals.finished.emit()
 
@@ -3131,6 +3358,9 @@ class HistoryWorker(QThread):
         self.signals = WorkerSignals()
         self._stop = False
 
+    def stop(self):
+        self._stop = True
+
     def run(self):
         try:
             if self.mode == "apple":
@@ -3140,7 +3370,7 @@ class HistoryWorker(QThread):
             if not self._stop:
                 self.signals.data.emit(rows)
         except Exception as e:
-            self.signals.error.emit("获取历史版本失败：%s" % e)
+            self.signals.error.emit(str(e))
         finally:
             self.signals.finished.emit()
 
@@ -3193,14 +3423,16 @@ class DownloadWorker(QThread):
             reserve = max(64 * 1024 * 1024, min(256 * 1024 * 1024, int(total * 0.05))) if total else 0
             if free < remaining + reserve:
                 need = remaining + reserve
-                result["reason"] = "磁盘空间不足：当前可用 %s，本任务至少需要 %s。" % (
-                    format_transfer_size(free), format_transfer_size(need))
+                result["reason"] = localized(
+                    "磁盘空间不足：当前可用 %s，本任务至少需要 %s。",
+                    "Not enough disk space: %s is available, but this task needs at least %s.") % (
+                        format_transfer_size(free), format_transfer_size(need))
                 self.task_update.emit(task_id, {"status": "failed", "error": result["reason"]})
-                self.progress.emit("[失败] " + result["reason"])
+                self.progress.emit("[FAIL] " + result["reason"])
                 self.finished.emit(result)
                 return
 
-            self.progress.emit("开始下载 %s %s ..." % (q.get("name", ""), q.get("version", "")))
+            self.progress.emit("[START] %s %s ..." % (q.get("name", ""), q.get("version", "")))
             self.task_update.emit(task_id, {"status": "downloading", "error": ""})
             args = [
                 "download",
@@ -3277,7 +3509,8 @@ class DownloadWorker(QThread):
                 if proc.poll() is None and now - self._last_activity > stall_timeout:
                     self._action = "timeout"
                     self._stop_process()
-                    self.progress.emit("[超时] 10 分钟没有收到数据，已停止本任务。")
+                    self.progress.emit(localized("[TIMEOUT] 10 分钟没有收到数据，已停止本任务。",
+                                                 "[TIMEOUT] No data was received for 10 minutes; this task was stopped."))
                     return
                 last_t, last_size = now, size
 
@@ -3320,11 +3553,14 @@ class DownloadWorker(QThread):
         combined = "\n".join(output_lines)
         low = combined.lower()
         if "os error 112" in low or "存储空间不足" in combined or "磁盘空间不足" in combined:
-            reason = "磁盘空间不足，未能写完 IPA。请更换下载目录或释放空间后继续。"
+            reason = localized("磁盘空间不足，未能写完 IPA。请更换下载目录或释放空间后继续。",
+                               "There is not enough disk space to finish the IPA. Change the download folder or free space, then retry.")
         elif self._action == "timeout":
-            reason = "下载长时间没有收到数据，请检查网络或代理后继续。"
+            reason = localized("下载长时间没有收到数据，请检查网络或代理后继续。",
+                               "No data was received for a long time. Check the network or proxy, then retry.")
         else:
-            reason = "下载失败（返回码 %s）。%s" % (rc, output_lines[-1] if output_lines else "")
+            reason = localized("下载失败（返回码 %s）。%s",
+                               "Download failed (return code %s). %s") % (rc, output_lines[-1] if output_lines else "")
         self.progress.emit("[FAIL] %s %s：%s" % (q.get("name", ""), q.get("version", ""), reason))
         self.progress_pct.emit(0)
         self.task_update.emit(q["id"], {"status": "failed", "speed": 0.0, "error": reason})
@@ -3349,6 +3585,9 @@ class TransparentMacWindow(QMainWindow):
         self.dragging = False
         self.drag_start = QPoint()
         self.worker = None
+        self._content_workers = set()
+        self._search_generation = 0
+        self._history_generation = 0
         self.download_monitor = None
         self._download_workers = {}
         self._download_session_ids = set()
@@ -3461,13 +3700,40 @@ class TransparentMacWindow(QMainWindow):
         self.activateWindow()
 
     def _exit_app(self):
+        self._stop_content_worker()
         if self.tray_icon:
             self.tray_icon.hide()
         QApplication.quit()
 
+    def _stop_content_worker(self):
+        """Stop an active search/history worker without blocking the UI thread."""
+        self._search_generation += 1
+        self._history_generation += 1
+        worker = self.worker
+        self.worker = None
+        if worker is None:
+            return
+        try:
+            worker.stop()
+        except Exception:
+            pass
+        try:
+            worker.quit()
+        except Exception:
+            pass
+
+    def _track_content_worker(self, worker):
+        self._content_workers.add(worker)
+
+        def cleanup():
+            self._content_workers.discard(worker)
+            worker.deleteLater()
+
+        worker.finished.connect(cleanup)
+
     def closeEvent(self, event):
         dlg = MacStyleMessageBox(self, title=tr("confirm_exit_title"), message=tr("confirm_exit_message"),
-                                 icon_type="question", buttons=["确定", "取消"])
+                                 icon_type="question", buttons=[tr("ok"), tr("cancel")])
         if dlg.exec() == QDialog.DialogCode.Accepted:
             save_config()
             self._exit_app()
@@ -3584,7 +3850,7 @@ class TransparentMacWindow(QMainWindow):
             self.search_hint.setText(tr("search_flow"))
         if hasattr(self, "history_mode_combo"):
             if hasattr(self, "history_mode_label"):
-                self.history_mode_label.setText("Version ID source:" if current_language() == "en" else "查找版本ID模式:")
+                self.history_mode_label.setText(tr("history_mode_label"))
             current = self.history_mode_combo.currentData() or "apple"
             self.history_mode_combo.blockSignals(True)
             self.history_mode_combo.clear()
@@ -3594,17 +3860,15 @@ class TransparentMacWindow(QMainWindow):
             self.history_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.history_mode_combo.blockSignals(False)
         if hasattr(self, "history_load_btn"):
-            self.history_load_btn.setText("Load version history" if current_language() == "en" else "加载历史版本")
+            self.history_load_btn.setText(tr("load_history"))
         if hasattr(self, "history_select_all_btn"):
-            self.history_select_all_btn.setText("Select all" if current_language() == "en" else "全选")
+            self.history_select_all_btn.setText(tr("select_all"))
         if hasattr(self, "history_invert_btn"):
-            self.history_invert_btn.setText("Invert" if current_language() == "en" else "反选")
+            self.history_invert_btn.setText(tr("invert"))
         if hasattr(self, "history_enqueue_btn"):
-            self.history_enqueue_btn.setText("Download selected" if current_language() == "en" else "下载选中版本")
+            self.history_enqueue_btn.setText(tr("download_selected"))
         if hasattr(self, "history_app_info") and not self.current_app:
-            self.history_app_info.setText(
-                "No app selected. Double-click an app in App Search first."
-                if current_language() == "en" else "尚未选择应用。请到「APP搜索」中双击任意应用。")
+            self.history_app_info.setText(tr("no_app_selected"))
         if hasattr(self, "history_table"):
             self.history_table.setHorizontalHeaderLabels([
                 tr("select"), tr("version"), tr("version_id"), tr("size"), tr("updated")])
@@ -3628,6 +3892,20 @@ class TransparentMacWindow(QMainWindow):
             self.download_progress.setFormat(tr("waiting_download"))
         if hasattr(self, "download_queue_table"):
             self._refresh_download_queue()
+        if hasattr(self, "install_header_lbl"):
+            self.install_header_lbl.setText(tr("install_header") % IPAS_DIR)
+        if hasattr(self, "install_open_dir_btn"):
+            self.install_open_dir_btn.setText(tr("open_folder"))
+        if hasattr(self, "install_delete_btn"):
+            self.install_delete_btn.setText(tr("delete_selected"))
+        if hasattr(self, "install_clear_btn"):
+            self.install_clear_btn.setText(tr("clear_all"))
+        if hasattr(self, "install_refresh_btn"):
+            self.install_refresh_btn.setText(tr("refresh"))
+        if hasattr(self, "install_tip"):
+            self.install_tip.setText(tr("install_tip"))
+        if hasattr(self, "install_list"):
+            self._refresh_install_list()
 
     def _switch_tab(self, idx):
         for i, b in enumerate(self.nav_btns):
@@ -3789,18 +4067,20 @@ class TransparentMacWindow(QMainWindow):
         global COUNTRY_SAVE
         COUNTRY_SAVE = country
         self.search_btn.setEnabled(False)
-        self.search_hint.setText(("Searching: %s (%s, first %d items)..." if current_language() == "en"
-                                  else "搜索中：%s（%s，前 %d 个）...") % (kw, self.country_combo.currentText(), limit))
-        if self.worker:
-            try:
-                self.worker.quit()
-            except Exception:
-                pass
-        self.worker = SearchWorker(kw, country, limit)
-        self.worker.signals.data.connect(self._on_search_data)
-        self.worker.signals.error.connect(self._on_search_error)
-        self.worker.signals.finished.connect(self._on_search_finished)
-        self.worker.start()
+        self.search_hint.setText(
+            tr("searching") % (kw, self.country_combo.currentText(), limit))
+        self._stop_content_worker()
+        generation = self._search_generation
+        worker = SearchWorker(kw, country, limit)
+        self.worker = worker
+        self._track_content_worker(worker)
+        worker.signals.data.connect(
+            lambda apps, token=generation: self._on_search_data(apps, token))
+        worker.signals.error.connect(
+            lambda msg, token=generation: self._on_search_error(msg, token))
+        worker.signals.finished.connect(
+            lambda token=generation, current=worker: self._on_search_finished(token, current))
+        worker.start()
 
     def _on_country_changed(self, index):
         """非国区搜索仍可免登录，但官方版本和下载需要对应区域账号。"""
@@ -3847,17 +4127,17 @@ class TransparentMacWindow(QMainWindow):
         rating = a.get("rating", 0) or 0
         rating_count = a.get("rating_count", 0) or 0
         if rating:
-            rating_txt = "\u2605 %.1f（%s）" % (rating, self._fmt_count(rating_count))
+            rating_txt = "\u2605 %.1f (%s)" % (rating, self._fmt_count(rating_count))
         else:
-            rating_txt = "暂无评分"
+            rating_txt = tr("no_rating")
         meta_parts = [
             rating_txt,
-            "价格 %s" % (a.get("price") or "免费"),
-            "版本 %s" % (a.get("version") or "暂未获取"),
-            "大小 %s" % format_size(a.get("size")),
+            tr("price") % (a.get("price") or tr("free")),
+            tr("version_value") % (a.get("version") or tr("not_available")),
+            "%s %s" % (tr("size"), format_size(a.get("size"))),
         ]
         if a.get("seller"):
-            meta_parts.append("开发者 %s" % a["seller"])
+            meta_parts.append(tr("developer") % a["seller"])
         meta_lbl = QLabel("  |  ".join(meta_parts))
         meta_lbl.setStyleSheet("QLabel{font-size:12px;color:#666;background:transparent;}")
         meta_lbl.setWordWrap(True)
@@ -3866,9 +4146,9 @@ class TransparentMacWindow(QMainWindow):
         desc = a.get("description", "") or ""
         if len(desc) > 110:
             desc = desc[:110] + "..."
-        extra = "包名 %s" % (a.get("bundle_id") or "")
+        extra = tr("bundle") % (a.get("bundle_id") or "")
         if a.get("genres"):
-            extra = "分类 %s  |  " % a["genres"] + extra
+            extra = tr("category") % a["genres"] + extra
         sub2 = extra + ("\n%s" % desc if desc else "")
         sub_lbl = QLabel(sub2)
         sub_lbl.setStyleSheet("QLabel{font-size:11px;color:#888;background:transparent;}")
@@ -3888,7 +4168,9 @@ class TransparentMacWindow(QMainWindow):
             return "%.1f 万" % (n / 10000.0)
         return str(n)
 
-    def _on_search_data(self, apps):
+    def _on_search_data(self, apps, generation=None):
+        if generation is not None and generation != self._search_generation:
+            return
         self.search_results = apps
         self.search_list.clear()
         for a in apps:
@@ -3897,15 +4179,21 @@ class TransparentMacWindow(QMainWindow):
             item.setSizeHint(QSize(0, 92))
             self.search_list.addItem(item)
             self.search_list.setItemWidget(item, self._make_app_item_widget(a))
-        self.search_hint.setText("找到 %d 个结果。双击任意应用进入「历史版本」，选择版本后即可直接下载旧版。" % len(apps))
+        self.search_hint.setText(tr("search_results_hint") % len(apps))
 
-    def _on_search_finished(self):
+    def _on_search_finished(self, generation=None, worker=None):
+        if generation is not None and generation != self._search_generation:
+            return
+        if worker is None or self.worker is worker:
+            self.worker = None
         self.search_btn.setEnabled(True)
 
-    def _on_search_error(self, msg):
+    def _on_search_error(self, msg, generation=None):
+        if generation is not None and generation != self._search_generation:
+            return
         self.search_btn.setEnabled(True)
-        self.search_hint.setText("搜索失败：" + msg)
-        MacStyleMessageBox(self, title="搜索失败", message=msg, icon_type="warning").exec()
+        self.search_hint.setText(tr("search_failed") + ": " + msg)
+        MacStyleMessageBox(self, title=tr("search_failed"), message=msg, icon_type="warning").exec()
 
     def _on_app_double_clicked(self, item):
         app = item.data(Qt.ItemDataRole.UserRole)
@@ -3921,9 +4209,9 @@ class TransparentMacWindow(QMainWindow):
             return
         app = item.data(Qt.ItemDataRole.UserRole)
         menu = QMenu(self)
-        act_store = menu.addAction("前往 iTunes Store")
-        act_copy = menu.addAction("复制链接")
-        act_ver = menu.addAction("查找版本ID（本地）")
+        act_store = menu.addAction(tr("open_store"))
+        act_copy = menu.addAction(tr("copy_link"))
+        act_ver = menu.addAction(tr("find_versions_local"))
         chosen = menu.exec(self.search_list.mapToGlobal(pos))
         if chosen == act_store:
             url = app.get("track_view_url", "")
@@ -3931,7 +4219,8 @@ class TransparentMacWindow(QMainWindow):
                 QDesktopServices.openUrl(QUrl(url))
         elif chosen == act_copy:
             QApplication.clipboard().setText(app.get("track_view_url", ""))
-            MacStyleMessageBox(self, title="已复制", message="App Store 链接已复制到剪贴板。", icon_type="success").exec()
+            MacStyleMessageBox(self, title=tr("copied_title"),
+                               message=tr("copied_message"), icon_type="success").exec()
         elif chosen == act_ver:
             self.current_app = app
             self._switch_tab(1)
@@ -3966,9 +4255,7 @@ class TransparentMacWindow(QMainWindow):
                        "QScrollBar::handle:vertical:hover{background:rgba(100,100,100,200);}"
                        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;background:none;}")
 
-        self.history_app_info = QLabel(
-            "No app selected. Double-click an app in App Search first."
-            if current_language() == "en" else "尚未选择应用。请到「APP搜索」中双击任意应用。")
+        self.history_app_info = QLabel(tr("no_app_selected"))
         self.history_app_info.setStyleSheet(
             "QLabel{font-size:14px;color:#333;background:rgba(255,255,255,65);"
             "border:1px solid rgba(255,255,255,110);border-radius:10px;padding:10px 14px;font-weight:600;}"
@@ -3978,7 +4265,7 @@ class TransparentMacWindow(QMainWindow):
 
         ctrl = QHBoxLayout()
         ctrl.setSpacing(8)
-        self.history_mode_label = QLabel("Version ID source:" if current_language() == "en" else "查找版本ID模式:")
+        self.history_mode_label = QLabel(tr("history_mode_label"))
         ctrl.addWidget(self.history_mode_label)
         self.history_mode_combo = QComboBox()
         self.history_mode_combo.addItem(tr("official_versions"), "apple")
@@ -3987,23 +4274,23 @@ class TransparentMacWindow(QMainWindow):
         self.history_mode_combo.currentIndexChanged.connect(
             lambda _i: setattr(self, "history_mode", self.history_mode_combo.currentData()))
         ctrl.addWidget(self.history_mode_combo)
-        self.history_load_btn = QPushButton("Load version history" if current_language() == "en" else "加载历史版本")
+        self.history_load_btn = QPushButton(tr("load_history"))
         self.history_load_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.history_load_btn.setStyleSheet(btn_blue)
         self.history_load_btn.clicked.connect(self._load_history_for_current)
         ctrl.addWidget(self.history_load_btn)
         ctrl.addStretch()
-        self.history_select_all_btn = QPushButton("Select all" if current_language() == "en" else "全选")
+        self.history_select_all_btn = QPushButton(tr("select_all"))
         self.history_select_all_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.history_select_all_btn.setStyleSheet(btn_gray)
         self.history_select_all_btn.clicked.connect(self._history_toggle_select_all)
         ctrl.addWidget(self.history_select_all_btn)
-        self.history_invert_btn = QPushButton("Invert" if current_language() == "en" else "反选")
+        self.history_invert_btn = QPushButton(tr("invert"))
         self.history_invert_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.history_invert_btn.setStyleSheet(btn_gray)
         self.history_invert_btn.clicked.connect(self._history_invert_selection)
         ctrl.addWidget(self.history_invert_btn)
-        self.history_enqueue_btn = QPushButton("Download selected" if current_language() == "en" else "下载选中版本")
+        self.history_enqueue_btn = QPushButton(tr("download_selected"))
         self.history_enqueue_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.history_enqueue_btn.setStyleSheet(btn_blue)
         self.history_enqueue_btn.clicked.connect(self._download_selected_versions)
@@ -4034,24 +4321,30 @@ class TransparentMacWindow(QMainWindow):
 
     def _load_history_for_current(self):
         if not self.current_app:
-            MacStyleMessageBox(self, title="提示", message="请先到「APP搜索」中双击选择一个应用。", icon_type="warning").exec()
+            MacStyleMessageBox(self, title=tr("choose_app_title"),
+                               message=tr("choose_app_message"), icon_type="warning").exec()
             return
         app = self.current_app
-        self.history_app_info.setText("当前应用：%s  (包名 %s  |  App ID %s)" % (app["track_name"], app["bundle_id"], app["track_id"]))
+        self.history_app_info.setText(
+            tr("current_app") % (app["track_name"], app["bundle_id"], app["track_id"]))
         self.history_load_btn.setEnabled(False)
         self.history_table.setRowCount(0)
-        if self.worker:
-            try:
-                self.worker.quit()
-            except Exception:
-                pass
-        self.worker = HistoryWorker(app["track_id"], self.history_mode)
-        self.worker.signals.data.connect(self._on_history_data)
-        self.worker.signals.error.connect(self._on_history_error)
-        self.worker.signals.finished.connect(self._on_history_finished)
-        self.worker.start()
+        self._stop_content_worker()
+        generation = self._history_generation
+        worker = HistoryWorker(app["track_id"], self.history_mode)
+        self.worker = worker
+        self._track_content_worker(worker)
+        worker.signals.data.connect(
+            lambda rows, token=generation: self._on_history_data(rows, token))
+        worker.signals.error.connect(
+            lambda msg, token=generation: self._on_history_error(msg, token))
+        worker.signals.finished.connect(
+            lambda token=generation, current=worker: self._on_history_finished(token, current))
+        worker.start()
 
-    def _on_history_data(self, rows):
+    def _on_history_data(self, rows, generation=None):
+        if generation is not None and generation != self._history_generation:
+            return
         self.history_rows = rows
         self.history_table.setSortingEnabled(False)
         self.history_table.setRowCount(len(rows))
@@ -4072,16 +4365,25 @@ class TransparentMacWindow(QMainWindow):
             self.history_table.setItem(r, 4, QTableWidgetItem(row["date"]))
         self.history_table.setSortingEnabled(True)
         self.history_table.sortItems(2, Qt.SortOrder.DescendingOrder)
-        self.history_app_info.setText("%s  共 %d 个历史版本（勾选或双击行即可下载）。" %
-                                       (self.history_app_info.text().split("  共")[0], len(rows)))
+        self.history_app_info.setText(
+            tr("history_count") % (
+                tr("current_app") % (self.current_app["track_name"],
+                                      self.current_app["bundle_id"],
+                                      self.current_app["track_id"]), len(rows)))
 
-    def _on_history_finished(self):
+    def _on_history_finished(self, generation=None, worker=None):
+        if generation is not None and generation != self._history_generation:
+            return
+        if worker is None or self.worker is worker:
+            self.worker = None
         self.history_load_btn.setEnabled(True)
 
-    def _on_history_error(self, msg):
+    def _on_history_error(self, msg, generation=None):
+        if generation is not None and generation != self._history_generation:
+            return
         self.history_load_btn.setEnabled(True)
-        self.history_app_info.setText("获取历史版本失败：" + msg)
-        MacStyleMessageBox(self, title="获取失败", message=msg, icon_type="warning").exec()
+        self.history_app_info.setText(tr("history_failed") + ": " + msg)
+        MacStyleMessageBox(self, title=tr("load_failed"), message=msg, icon_type="warning").exec()
 
     def _history_select_all(self):
         """"""
@@ -4089,7 +4391,7 @@ class TransparentMacWindow(QMainWindow):
             cb = self.history_table.item(r, 0)
             if cb:
                 cb.setCheckState(Qt.CheckState.Checked)
-        self.history_select_all_btn.setText("取消全选")
+        self.history_select_all_btn.setText(tr("cancel_select_all"))
 
     def _history_toggle_select_all(self):
         """"""
@@ -4106,13 +4408,13 @@ class TransparentMacWindow(QMainWindow):
                 cb = self.history_table.item(r, 0)
                 if cb:
                     cb.setCheckState(Qt.CheckState.Unchecked)
-            self.history_select_all_btn.setText("全选")
+            self.history_select_all_btn.setText(tr("select_all"))
         else:
             for r in range(rows):
                 cb = self.history_table.item(r, 0)
                 if cb:
                     cb.setCheckState(Qt.CheckState.Checked)
-            self.history_select_all_btn.setText("取消全选")
+            self.history_select_all_btn.setText(tr("cancel_select_all"))
 
     def _history_invert_selection(self):
         """"""
@@ -4127,7 +4429,8 @@ class TransparentMacWindow(QMainWindow):
         checked = sum(1 for r in range(rows)
                       if self.history_table.item(r, 0)
                       and self.history_table.item(r, 0).checkState() == Qt.CheckState.Checked)
-        self.history_select_all_btn.setText("取消全选" if (rows and checked >= rows) else "全选")
+        self.history_select_all_btn.setText(
+            tr("cancel_select_all") if (rows and checked >= rows) else tr("select_all"))
 
     def _get_checked_versions(self):
         """"""
@@ -4144,8 +4447,9 @@ class TransparentMacWindow(QMainWindow):
     # ═════════════════════════════════════════
     def _start_download(self, picked):
         if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
-            MacStyleMessageBox(self, title="软件组件异常",
-                               message="下载组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
+            MacStyleMessageBox(self, title=tr("component_error_title"),
+                               message=localized("下载组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
+                                                 "The download component is missing. Download the complete package again."),
                                icon_type="warning").exec()
             return
         tasks = []
@@ -4178,10 +4482,8 @@ class TransparentMacWindow(QMainWindow):
 
         if not logged:
             MacStyleMessageBox(
-                self, title="尚未登录",
-                message="下载前需要先登录 Apple ID。\n\n"
-                        "请点击右上角「⚙ 设置」按钮，填写 Apple ID 和密码完成登录。"
-                        "若账号开启双重认证，会在设置窗口内输入 6 位验证码。",
+                self, title=tr("download_signin_title"),
+                message=tr("download_signin_message"),
                 icon_type="warning").exec()
             self._open_settings()
             return
@@ -4262,32 +4564,38 @@ class TransparentMacWindow(QMainWindow):
         if not ok_list and not fail_list:
             return
         if ok_list:
-            msg = "下载任务已结束。\n\n" + "\n".join(
+            msg = localized("下载任务已结束。\n\n", "Download tasks finished.\n\n") + "\n".join(
                 "✅ %s %s" % (q["name"], q["version"]) for q in ok_list)
             if fail_list:
-                msg += "\n\n未成功：\n" + "\n".join(
-                    "❌ %s %s：%s" % (q["name"], q["version"], q.get("error") or "下载失败")
+                msg += localized("\n\n未成功：\n", "\n\nFailed:\n") + "\n".join(
+                    "❌ %s %s: %s" % (q["name"], q["version"],
+                                      q.get("error") or tr("download_status_failed"))
                     for q in fail_list)
-            msg += ("\n\n保存位置：\n%s\n\n安装可使用 iMazing 或爱思助手导入 IPA。"
-                    "\n是否现在打开文件夹？" % IPAS_DIR)
-            dlg = MacStyleMessageBox(self, title="下载完成", message=msg,
-                                     icon_type="success", buttons=["是", "否"])
+            msg += localized(
+                "\n\n保存位置：\n%s\n\n安装可使用 iMazing 或爱思助手导入 IPA。\n是否现在打开文件夹？",
+                "\n\nSaved to:\n%s\n\nUse iMazing or another IPA installer to import the file.\nOpen the folder now?") % IPAS_DIR
+            dlg = MacStyleMessageBox(self, title=localized("下载完成", "Download complete"), message=msg,
+                                     icon_type="success", buttons=[localized("是", "Yes"), localized("否", "No")])
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 try:
                     os.startfile(IPAS_DIR)
                 except Exception:
                     QDesktopServices.openUrl(QUrl.fromLocalFile(IPAS_DIR))
         else:
-            msg = "本次没有成功下载到 IPA。\n\n" + "\n".join(
-                "❌ %s %s：%s" % (q["name"], q["version"], q.get("error") or "下载失败")
+            msg = localized("本次没有成功下载到 IPA。\n\n", "No IPA was downloaded successfully.\n\n") + "\n".join(
+                "❌ %s %s: %s" % (q["name"], q["version"],
+                                  q.get("error") or tr("download_status_failed"))
                 for q in fail_list)
-            MacStyleMessageBox(self, title="下载未完成", message=msg, icon_type="warning").exec()
+            MacStyleMessageBox(self, title=localized("下载未完成", "Download incomplete"),
+                               message=msg, icon_type="warning").exec()
 
     def _download_selected_versions(self):
         """"""
         picked = self._get_checked_versions()
         if not picked:
-            MacStyleMessageBox(self, title="提示", message="请先勾选要下载的版本（可点「全选」或双击某行）。",
+            MacStyleMessageBox(self, title=tr("choose_app_title"),
+                               message=localized("请先勾选要下载的版本（可点「全选」或双击某行）。",
+                                                 "Select a version first (use Select all or double-click a row)."),
                                icon_type="info").exec()
             return
         for d in picked:
@@ -4304,10 +4612,14 @@ class TransparentMacWindow(QMainWindow):
                 added += 1
         self._refresh_download_queue()
         if added > 0:
-            MacStyleMessageBox(self, title="已加入", message="已将 %d 个版本加入下载队列，可到「下载应用」Tab 执行下载。" % added,
+            MacStyleMessageBox(self, title=localized("已加入", "Added"),
+                               message=localized("已将 %d 个版本加入下载队列，可到「下载应用」Tab 执行下载。",
+                                                 "%d version(s) were added to the download queue. Open Downloads to start.") % added,
                                icon_type="success").exec()
         else:
-            MacStyleMessageBox(self, title="提示", message="请先勾选要下载的版本。", icon_type="info").exec()
+            MacStyleMessageBox(self, title=tr("choose_app_title"),
+                               message=localized("请先勾选要下载的版本。", "Select at least one version first."),
+                               icon_type="info").exec()
 
     def _enqueue(self, d):
         key = (str(d["app_id"]), str(d["version_id"]))
@@ -4555,7 +4867,7 @@ class TransparentMacWindow(QMainWindow):
             size_item.setText("%s / %s" %
                               (format_transfer_size(downloaded),
                                format_transfer_size(total) if total else
-                               ("Fetch on download" if current_language() == "en" else "下载时获取")))
+                               tr("fetch_on_download")))
         speed_item = table.item(row, 3)
         if speed_item:
             speed = float(task.get("speed") or 0)
@@ -4570,7 +4882,7 @@ class TransparentMacWindow(QMainWindow):
                 # 未知总大小时不能使用 0,0 忙碌条，否则每行都会显示成半条假进度。
                 bar.setRange(0, 100)
                 bar.setValue(0)
-                bar.setFormat("读取中")
+                bar.setFormat(tr("reading_size"))
             else:
                 bar.setRange(0, 100)
                 bar.setValue(max(0, min(100, percent)))
@@ -4672,7 +4984,8 @@ class TransparentMacWindow(QMainWindow):
     def _download_start(self):
         """"""
         if not self.download_queue:
-            MacStyleMessageBox(self, title="提示", message="下载队列为空，请到「历史版本」勾选或双击要下载的版本。", icon_type="warning").exec()
+            MacStyleMessageBox(self, title=tr("empty_queue_title"),
+                               message=tr("empty_queue_message"), icon_type="warning").exec()
             return
         tasks = []
         for task in self.download_queue:
@@ -4693,12 +5006,12 @@ class TransparentMacWindow(QMainWindow):
         text = str(line or "").strip()
         if not text or not hasattr(self, "download_current_lbl"):
             return
-        if text.startswith("开始下载"):
-            self.download_current_lbl.setText(text.replace(" ...", ""))
+        if text.startswith(("[START]", "开始下载")):
+            self.download_current_lbl.setText(text.replace("[START]", "", 1).replace(" ...", "").strip())
         elif text.startswith("[OK]"):
-            self.download_current_lbl.setText("最近一个下载任务已完成")
-        elif text.startswith(("[FAIL]", "[错误]", "[失败]")):
-            self.download_current_lbl.setText("有下载任务失败，请点“重试”")
+            self.download_current_lbl.setText(tr("recent_complete"))
+        elif text.startswith(("[FAIL]", "[TIMEOUT]", "[错误]", "[失败]")):
+            self.download_current_lbl.setText(tr("download_failed_hint"))
 
     def _on_download_progress(self, value):
         self._update_overall_download_progress()
@@ -4710,7 +5023,7 @@ class TransparentMacWindow(QMainWindow):
         if not tasks:
             self.download_progress.setRange(0, 100)
             self.download_progress.setValue(0)
-            self.download_progress.setFormat("等待下载")
+            self.download_progress.setFormat(tr("waiting_download"))
             if hasattr(self, "download_current_lbl"):
                 self.download_current_lbl.setText("")
             return
@@ -4718,23 +5031,32 @@ class TransparentMacWindow(QMainWindow):
         for task in tasks:
             if task.get("status") == "completed":
                 values.append(100)
-            else:
-                pct = int(task.get("percent") if task.get("percent") is not None else 0)
-                values.append(max(0, pct))
-        overall = int(sum(values) / max(1, len(values)))
+                continue
+            total = int(task.get("total") or 0)
+            downloaded = int(task.get("downloaded") or 0)
+            if total > 0:
+                values.append(max(0, min(100, int(downloaded * 100 / total))))
+                continue
+            # Unknown-size tasks must not be counted as a false 0% while
+            # their size is still being read.
+            pct = int(task.get("percent") if task.get("percent") is not None else -1)
+            if pct >= 0:
+                values.append(max(0, min(100, pct)))
+        overall = int(sum(values) / len(values)) if values else 0
         done = sum(1 for q in tasks if q.get("status") == "completed")
         active = sum(1 for q in tasks if q.get("status") == "downloading")
         waiting = sum(1 for q in tasks if q.get("status") == "queued")
         self.download_progress.setRange(0, 100)
         self.download_progress.setValue(overall)
-        self.download_progress.setFormat("总进度 %d%%（已完成 %d / %d）" % (overall, done, len(tasks)))
+        self.download_progress.setFormat(
+            tr("overall_progress") % (overall, done, len(tasks)))
         if hasattr(self, "download_current_lbl"):
-            self.download_current_lbl.setText("正在下载 %d 个，等待 %d 个" % (active, waiting))
+            self.download_current_lbl.setText(tr("active_waiting") % (active, waiting))
 
     def _download_finished(self):
         self.download_start_btn.setEnabled(True)
         if hasattr(self, "download_current_lbl"):
-            self.download_current_lbl.setText("下载窗口已关闭")
+            self.download_current_lbl.setText(tr("download_closed"))
         if hasattr(self, "_refresh_install_list"):
             self._refresh_install_list()
 
@@ -4761,24 +5083,25 @@ class TransparentMacWindow(QMainWindow):
 
         head = QHBoxLayout()
         head.setSpacing(8)
-        head.addWidget(QLabel("已下载的安装包（目录: %s）：" % IPAS_DIR))
+        self.install_header_lbl = QLabel(tr("install_header") % IPAS_DIR)
+        head.addWidget(self.install_header_lbl)
         head.addStretch()
-        self.install_open_dir_btn = QPushButton("打开目录")
+        self.install_open_dir_btn = QPushButton(tr("open_folder"))
         self.install_open_dir_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.install_open_dir_btn.setStyleSheet(btn_gray)
         self.install_open_dir_btn.clicked.connect(self._install_open_dir)
         head.addWidget(self.install_open_dir_btn)
-        self.install_delete_btn = QPushButton("删除选中")
+        self.install_delete_btn = QPushButton(tr("delete_selected"))
         self.install_delete_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.install_delete_btn.setStyleSheet(btn_gray)
         self.install_delete_btn.clicked.connect(self._install_delete_selected)
         head.addWidget(self.install_delete_btn)
-        self.install_clear_btn = QPushButton("清空全部")
+        self.install_clear_btn = QPushButton(tr("clear_all"))
         self.install_clear_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.install_clear_btn.setStyleSheet(btn_gray)
         self.install_clear_btn.clicked.connect(self._install_clear_all)
         head.addWidget(self.install_clear_btn)
-        self.install_refresh_btn = QPushButton("刷新")
+        self.install_refresh_btn = QPushButton(tr("refresh"))
         self.install_refresh_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.install_refresh_btn.setStyleSheet(btn_gray)
         self.install_refresh_btn.clicked.connect(self._refresh_install_list)
@@ -4793,11 +5116,8 @@ class TransparentMacWindow(QMainWindow):
         self.install_list.itemDoubleClicked.connect(self._install_open_folder)
         layout.addWidget(self.install_list, 1)
 
-        tip = QLabel("安装到手机（真实有效）：\n"
-                     "1. 手机「卸载 App」（设置→通用→iPhone 储存空间→卸载，保留数据）；\n"
-                     "2. 电脑用 iMazing 3.4.0 或 爱思助手「导入安装」选择上方 IPA；\n"
-                     "3. 装完：设置→App Store→关闭「App 更新」，避免被覆盖回新版。\n"
-                     "操作：双击=打开所在文件夹；可多选后点「删除选中」；右键可「在文件夹中打开 / 删除 / 复制路径」。")
+        self.install_tip = QLabel(tr("install_tip"))
+        tip = self.install_tip
         tip.setStyleSheet("QLabel{font-size:12px;color:#555;background:rgba(255,255,255,40);"
                          "border-radius:10px;padding:10px;}")
         tip.setWordWrap(True)
@@ -4819,11 +5139,12 @@ class TransparentMacWindow(QMainWindow):
         files.sort(key=lambda x: x[2], reverse=True)
         for fn, size, mtime in files:
             dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-            item = QListWidgetItem("%s\n大小 %s  |  %s" % (fn, format_size(size), dt))
+            item = QListWidgetItem("%s\n%s %s  |  %s" %
+                                  (fn, tr("size"), format_size(size), dt))
             item.setData(Qt.ItemDataRole.UserRole, os.path.join(IPAS_DIR, fn))
             self.install_list.addItem(item)
         if not files:
-            self.install_list.addItem("（暂无已下载的 IPA，先到「下载应用」执行下载）")
+            self.install_list.addItem(tr("no_downloaded_ipa"))
 
     def _on_install_context_menu(self, pos):
         item = self.install_list.itemAt(pos)
@@ -4833,24 +5154,26 @@ class TransparentMacWindow(QMainWindow):
         if not path or not os.path.exists(path):
             return
         menu = QMenu(self)
-        act_open = menu.addAction("在文件夹中打开")
-        act_copy = menu.addAction("复制路径")
-        act_del = menu.addAction("删除")
+        act_open = menu.addAction(tr("open_folder_context"))
+        act_copy = menu.addAction(tr("copy_path"))
+        act_del = menu.addAction(tr("delete"))
         chosen = menu.exec(self.install_list.mapToGlobal(pos))
         if chosen == act_open:
             self._install_open_folder(item)
         elif chosen == act_copy:
             QApplication.clipboard().setText(path)
-            MacStyleMessageBox(self, title="已复制", message="路径已复制：\n%s" % path, icon_type="success").exec()
+            MacStyleMessageBox(self, title=tr("copied_title"),
+                               message=tr("path_copied") % path, icon_type="success").exec()
         elif chosen == act_del:
-            dlg = MacStyleMessageBox(self, title="确认删除", message="确定删除该 IPA？\n%s" % os.path.basename(path),
-                                     icon_type="question", buttons=["确定", "取消"])
+            dlg = MacStyleMessageBox(self, title=localized("确认删除", "Confirm deletion"),
+                                     message=tr("confirm_delete_one") % os.path.basename(path),
+                                     icon_type="question", buttons=[tr("ok"), tr("cancel")])
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 try:
                     os.remove(path)
                     self._refresh_install_list()
                 except Exception as e:
-                    MacStyleMessageBox(self, title="删除失败", message=str(e), icon_type="warning").exec()
+                    MacStyleMessageBox(self, title=tr("delete_failed"), message=str(e), icon_type="warning").exec()
 
     def _install_open_folder(self, item):
         path = item.data(Qt.ItemDataRole.UserRole) if item else None
@@ -4882,13 +5205,13 @@ class TransparentMacWindow(QMainWindow):
         """"""
         paths = self._install_collect_selected_paths()
         if not paths:
-            MacStyleMessageBox(self, title="提示", message="请先选中要删除的安装包（可配合 Ctrl / Shift 多选）。",
+            MacStyleMessageBox(self, title=tr("choose_app_title"), message=tr("select_packages"),
                                icon_type="info").exec()
             return
         names = "\n".join(os.path.basename(p) for p in paths)
-        dlg = MacStyleMessageBox(self, title="确认删除",
-                                 message="确定删除以下 %d 个安装包？\n\n%s\n\n删除后无法恢复。" % (len(paths), names),
-                                 icon_type="question", buttons=["确定", "取消"])
+        dlg = MacStyleMessageBox(self, title=localized("确认删除", "Confirm deletion"),
+                                 message=tr("confirm_delete_many") % (len(paths), names),
+                                 icon_type="question", buttons=[tr("ok"), tr("cancel")])
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         failed = []
@@ -4899,9 +5222,11 @@ class TransparentMacWindow(QMainWindow):
                 failed.append("%s：%s" % (os.path.basename(p), e))
         self._refresh_install_list()
         if failed:
-            MacStyleMessageBox(self, title="部分删除失败", message="\n".join(failed), icon_type="warning").exec()
+            MacStyleMessageBox(self, title=tr("partial_delete_failed"),
+                               message="\n".join(failed), icon_type="warning").exec()
         else:
-            MacStyleMessageBox(self, title="已删除", message="已删除 %d 个安装包。" % len(paths),
+            MacStyleMessageBox(self, title=localized("已删除", "Deleted"),
+                               message=tr("deleted_packages") % len(paths),
                                icon_type="success").exec()
 
     def _install_clear_all(self):
@@ -4910,11 +5235,12 @@ class TransparentMacWindow(QMainWindow):
             return
         files = [os.path.join(IPAS_DIR, f) for f in os.listdir(IPAS_DIR) if f.lower().endswith(".ipa")]
         if not files:
-            MacStyleMessageBox(self, title="提示", message="当前没有可清空的安装包。", icon_type="info").exec()
+            MacStyleMessageBox(self, title=tr("choose_app_title"), message=tr("nothing_to_clear"),
+                               icon_type="info").exec()
             return
-        dlg = MacStyleMessageBox(self, title="确认清空",
-                                 message="确定清空全部 %d 个安装包？\n\n目录：%s\n\n删除后无法恢复。" % (len(files), IPAS_DIR),
-                                 icon_type="question", buttons=["确定", "取消"])
+        dlg = MacStyleMessageBox(self, title=localized("确认清空", "Confirm clear"),
+                                 message=tr("confirm_clear") % (len(files), IPAS_DIR),
+                                 icon_type="question", buttons=[tr("ok"), tr("cancel")])
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         failed = 0
@@ -4925,10 +5251,12 @@ class TransparentMacWindow(QMainWindow):
                 failed += 1
         self._refresh_install_list()
         if failed:
-            MacStyleMessageBox(self, title="清空结果", message="已清空，其中 %d 个删除失败。" % failed,
+            MacStyleMessageBox(self, title=localized("清空结果", "Clear result"),
+                               message=tr("clear_result") % failed,
                                icon_type="warning").exec()
         else:
-            MacStyleMessageBox(self, title="已清空", message="已清空 %d 个安装包。" % len(files),
+            MacStyleMessageBox(self, title=localized("已清空", "Cleared"),
+                               message=tr("cleared_packages") % len(files),
                                icon_type="success").exec()
 
 # ─────────────────────────────────────────────
