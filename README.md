@@ -5,6 +5,12 @@
   <strong><font color="#d00000" size="4">本软件从未收集用户账号密码，代码公开透明！！！</font></strong>
 </p>
 
+<p align="center">
+  <a href="#english"><kbd>English</kbd></a>
+  &nbsp;|&nbsp;
+  <a href="#中文介绍"><kbd>中文</kbd></a>
+</p>
+
 ## 中文介绍
 
 一个简单易用的 Windows iOS 旧版应用下载工具。它可以搜索 App Store 应用、查看历史版本，并将指定版本下载为 IPA 文件，方便后续使用爱思助手、iMazing 等工具直接安装即可。
