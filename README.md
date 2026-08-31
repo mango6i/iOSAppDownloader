@@ -33,6 +33,10 @@
 
 ![应用搜索](images/01-search.png)
 
+<p>
+  <strong><font color="#d00000" size="5">本软件以开源并且免费，切勿上当受骗！！！</font></strong>
+</p>
+
 ### 历史版本
 
 ![历史版本](images/02-history.png)
