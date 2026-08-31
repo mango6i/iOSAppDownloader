@@ -176,7 +176,7 @@ def _ht(text):
 # 首页“请先登录”弹窗的完整内容在 startup_login_message() 中修改。
 # ─────────────────────────────────────────────
 LANGUAGE_MODE = "auto"  # auto: 跟随 Windows 系统语言；zh: 中文；en: English
-STARTUP_REPO_URL = "https://github.com/mango6i/iOSAppDownloader"
+STARTUP_REPO_URL = ""
 
 TRANSLATIONS = {
     "zh": {
@@ -244,7 +244,6 @@ TRANSLATIONS = {
                           "若账号开启双重认证，会直接在设置窗口内输入 6 位验证码，不会跳转到其他窗口。<br><br>"
                           "登录成功后即可：搜索应用 → 选择历史版本 → 直接下载旧版 IPA。<br><br>",
         "open_source_notice": "本软件以开源并且免费，切勿上当受骗！！！",
-        "open_source_link": "开源地址",
         "status_loading": "正在读取登录状态...",
         "status_logged": "当前状态：已登录<br>账号：",
         "status_logged_out": "当前状态：未登录<br>填写 Apple ID 和密码后点「登录 / 重新登录」，若开启双重认证，会在下方输入 6 位验证码。",
@@ -371,7 +370,6 @@ TRANSLATIONS = {
                           "If two-factor authentication is enabled, enter the 6-digit code directly in the Settings window; no other window will open.<br><br>"
                           "After signing in: search an app → choose Version History → download the old IPA.<br><br>",
         "open_source_notice": "This software is open-source and free. Beware of scams!!!",
-        "open_source_link": "Open-source repository",
         "status_loading": "Reading sign-in status...",
         "status_logged": "Status: signed in<br>Account: ",
         "status_logged_out": "Status: not signed in<br>Enter your Apple ID and password, then click 「Sign in / Sign in again」. If two-factor authentication is enabled, enter the 6-digit code below.",
@@ -468,9 +466,7 @@ def startup_login_message():
     """Homepage sign-in dialog text; edit the two language entries above to change it."""
     return (tr("startup_message")
             + "<span style='font-size:16px;color:#d00000;font-weight:700;'>"
-            + tr("open_source_notice") + "</span><br>"
-            + "<a href='%s' style='font-size:16px;color:#1677ff;'>%s</a>"
-            % (STARTUP_REPO_URL, tr("open_source_link")))
+            + tr("open_source_notice") + "</span>")
 
 # ─────────────────────────────────────────────
 # ─────────────────────────────────────────────
@@ -1242,13 +1238,10 @@ class SettingsDialog(QDialog):
         language_row.addWidget(self.language_combo, 1)
         root.insertLayout(root.count() - 1, language_row)
 
-        signature = QLabel('<a href="https://github.com/mango6i/iOSAppDownloader">by：果果</a>')
-        signature.setOpenExternalLinks(True)
-        signature.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
+        signature = QLabel('by：果果')
         signature.setAlignment(Qt.AlignmentFlag.AlignCenter)
         signature.setStyleSheet(
-            "QLabel{font-size:11px;color:#777;background:transparent;padding-top:2px;}"
-            "QLabel a{color:#777;text-decoration:none;}QLabel a:hover{color:#1677ff;}")
+            "QLabel{font-size:11px;color:#777;background:transparent;padding-top:2px;}")
         root.addWidget(signature)
         center_window(self)
 
