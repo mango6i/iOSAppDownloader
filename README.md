@@ -16,13 +16,9 @@
 
 
 -<p>
-  <strong><font color="#d00000" size="6">本软件以开源并且免费，切勿上当受骗！！！</font></strong>
+  <strong><font color="red" size="6">本软件以开源并且免费，切勿上当受骗！！！</font></strong>
+
   <strong><font color="#d00000" size="6">本软件从未收集用户账号密码，代码公开透明！！！</font></strong>
-</p>
-
-
-<p>
-  <strong><font color="#d00000" size="5">本软件以开源并且免费，切勿上当受骗！！！</font></strong>
 </p>
 
 ## 使用说明
