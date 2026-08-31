@@ -1,9 +1,9 @@
 # iOS App Downloader
 
 <p align="center">
-  <a href="README_EN.md"><kbd>English</kbd></a>
+  <a href="https://mango6i.github.io/iOSAppDownloader/?lang=en"><kbd>English</kbd></a>
   &nbsp;|&nbsp;
-  <a href="README.md"><kbd>中文</kbd></a>
+  <a href="https://mango6i.github.io/iOSAppDownloader/?lang=zh"><kbd>中文</kbd></a>
 </p>
 
 <p>
