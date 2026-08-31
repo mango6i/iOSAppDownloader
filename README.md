@@ -33,11 +33,6 @@
 
 ![应用搜索](images/01-search.png)
 
-<p>
-  <strong><font color="#d00000" size="5">本软件以开源并且免费，切勿上当受骗！！！</font></strong><br>
-  <a href="https://github.com/mango6i/iOSAppDownloader"><font color="#1677ff" size="5">开源地址</font></a>
-</p>
-
 ### 历史版本
 
 ![历史版本](images/02-history.png)
