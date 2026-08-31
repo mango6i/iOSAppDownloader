@@ -32,6 +32,8 @@ A simple Windows tool for searching App Store apps, viewing older versions, and 
 4. Choose “Official version list” or “Login-free lookup”, select versions, and add them to the download queue.
 5. When a download finishes, click Open in the task row or use the Settings page to open the download folder.
 
+**If sign-in fails, please configure a VPN yourself. This software does not provide one.**
+
 When a region outside Mainland China is selected, the app warns that the Apple ID must have App Store access for that region. Login-free lookup may still show information, but official version retrieval and downloads may not work without a matching regional account.
 
 ## Screenshots
