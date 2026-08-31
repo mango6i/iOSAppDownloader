@@ -1,21 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+import os
+
+ROOT = Path(__file__).resolve().parent
+WINDOWS_DIR = Path(os.environ.get('WINDIR', 'C:/Windows'))
 hiddenimports = ['PyQt6.sip']
-version_file = 'version_info.txt'
+version_file = str(ROOT / 'version_info.txt')
 
 
 a = Analysis(
-    ['ios_old_app_downloader.py'],
-    pathex=[],
+    [str(ROOT / 'ios_old_app_downloader.py')],
+    pathex=[str(ROOT)],
     binaries=[
-        ('C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/ipatool/kosthi/ipatool.exe', '.'),
-        ('C:/Windows/System32/icuuc.dll', '.'),
+        (str(ROOT / 'ipatool' / 'kosthi' / 'ipatool.exe'), '.'),
+        (str(WINDOWS_DIR / 'System32' / 'icuuc.dll'), '.'),
     ],
     datas=[
-        ('C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/appstore.ico', '.'),
-        ('C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/ipatool/engine_seed', 'engine_seed'),
-        ('C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/ipatool/kosthi/LICENSE', 'licenses/ipatool-rs'),
-        ('C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/ipatool/kosthi/README.md', 'licenses/ipatool-rs'),
-        ('C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/ipatool/kosthi/CHANGELOG.md', 'licenses/ipatool-rs'),
+        (str(ROOT / 'appstore.ico'), '.'),
+        (str(ROOT / 'ipatool' / 'engine_seed'), 'engine_seed'),
+        (str(ROOT / 'ipatool' / 'kosthi' / 'LICENSE'), 'licenses/ipatool-rs'),
+        (str(ROOT / 'ipatool' / 'kosthi' / 'README.md'), 'licenses/ipatool-rs'),
+        (str(ROOT / 'ipatool' / 'kosthi' / 'CHANGELOG.md'), 'licenses/ipatool-rs'),
     ],
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -51,6 +56,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='C:/Users/Administrator/WorkBuddy/2026-08-29-11-52-41/appstore.ico',
+    icon=str(ROOT / 'appstore.ico'),
     version=version_file,
 )
