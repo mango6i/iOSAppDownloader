@@ -45,7 +45,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='iOSAppDownloader',
+    name='iOSAppDownloader_v1.0.5',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -61,3 +61,4 @@ exe = EXE(
     icon=str(ROOT / 'appstore.ico'),
     version=version_file,
 )
+
