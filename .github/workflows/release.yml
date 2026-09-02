@@ -1,0 +1,80 @@
+name: Build and publish Windows release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ios_old_app_downloader.py
+      - ios_old_app_downloader.spec
+      - version_info.txt
+      - appstore.ico
+      - ipatool/**
+      - RELEASE_NOTES_v*.md
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install PyInstaller PyQt6
+
+      - name: Read application version
+        shell: pwsh
+        run: |
+          $source = Get-Content -LiteralPath "ios_old_app_downloader.py" -Raw -Encoding UTF8
+          if ($source -notmatch 'APP_VERSION\s*=\s*"([^"]+)"') {
+            throw "APP_VERSION was not found."
+          }
+          "APP_VERSION=$($Matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm ios_old_app_downloader.spec
+          $expected = "dist/iOSAppDownloader_v$env:APP_VERSION.exe"
+          if (-not (Test-Path -LiteralPath $expected)) {
+            throw "Expected executable was not created: $expected"
+          }
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:APP_VERSION"
+          $asset = "dist/iOSAppDownloader_v$env:APP_VERSION.exe"
+          $notes = "RELEASE_NOTES_v$env:APP_VERSION.md"
+          if (-not (Test-Path -LiteralPath $notes)) {
+            $notes = "CHANGELOG.md"
+          }
+
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag --repo "${{ github.repository }}" --title "iOSAppDownloader $tag" --notes-file $notes --latest
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            gh release upload $tag $asset --repo "${{ github.repository }}" --clobber
+          }
+          else {
+            gh release create $tag $asset --repo "${{ github.repository }}" --target "$env:GITHUB_SHA" --title "iOSAppDownloader $tag" --notes-file $notes --latest
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
