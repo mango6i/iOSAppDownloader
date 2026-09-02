@@ -10,7 +10,7 @@ Tabs:
 
 Window frame is adapted from the desktop "IP Batch Converter" tool.
 """
-import sys, os, json, time, subprocess, io, re, base64, shutil, threading, ctypes, socket, ssl, tempfile, atexit, html
+import sys, os, json, time, subprocess, io, re, base64, shutil, threading, ctypes, socket, ssl, tempfile, atexit, html, unicodedata
 import zipfile, plistlib, urllib.parse, urllib.request, urllib.error, uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -61,7 +61,7 @@ except Exception as _e:
                     "当前缺少 PyQt6 依赖。\n\n"
                     "你运行的是源码文件，请先安装依赖：\npip install PyQt6\n\n"
                     "如果你想要无需安装的版本，请使用打包好的 "
-                    "iOSAppDownloader.exe。\n\n原始错误：%s" % _e)
+                    "iOSAppDownloader_v1.0.5.exe。\n\n原始错误：%s" % _e)
     sys.exit(1)
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -95,6 +95,8 @@ IPATOOL_SESSION_HOME = os.path.join(
 IPATOOL_SEED_ROOT = (os.path.join(_MEIPASS, "engine_seed") if _MEIPASS else
                      os.path.join(APP_DIR, "ipatool", "engine_seed"))
 IPATOOL_PROCESS_LOCK = threading.Lock()
+_LOGIN_CHALLENGE_PROXY = None
+_LOGIN_CHALLENGE_PROXY_LOCK = threading.Lock()
 _ENGINE_HOME_LOCK = threading.Lock()
 _ACTIVE_TOOL_WORKERS = set()
 _DIAGNOSTIC_LOCK = threading.Lock()
@@ -173,6 +175,11 @@ def _ht(text):
     return html.escape(str(text or "")).replace("\n", "<br>")
 
 
+def _normalize_2fa_code(value):
+    normalized = unicodedata.normalize("NFKC", str(value or "").strip())
+    return re.sub(r"[\s-]+", "", normalized)
+
+
 # ─────────────────────────────────────────────
 # 语言设置
 # 修改中文/英文界面文案时，优先在下面的 TRANSLATIONS 中修改；
@@ -180,10 +187,11 @@ def _ht(text):
 # ─────────────────────────────────────────────
 LANGUAGE_MODE = "auto"  # auto: 跟随 Windows 系统语言；zh: 中文；en: English
 STARTUP_REPO_URL = "https://github.com/mango6i/iOSAppDownloader"
+APP_VERSION = "1.0.5"
 
 TRANSLATIONS = {
     "zh": {
-        "window_title": "iOS旧版应用下载 v1.0.1",
+        "window_title": "iOS旧版应用下载 v%s" % APP_VERSION,
         "app_title": "iOS 旧版应用下载",
         "tray_tip": "iOS旧版应用下载",
         "show_window": "显示窗口",
@@ -224,6 +232,7 @@ TRANSLATIONS = {
         "diag_hint": "检测当前网络能否通过 Apple 登录认证",
         "done": "完成",
         "language": "界面语言:",
+        "software_version": "软件版本：v%s" % APP_VERSION,
         "language_auto": "跟随系统（自动）",
         "language_zh": "简体中文",
         "language_en": "English",
@@ -278,8 +287,8 @@ TRANSLATIONS = {
         "login_code_status": "正在验证双重认证码...<br>请稍候。",
         "login_start_status": "正在登录...<br>正在连接 Apple 服务器，请稍候。",
         "need_2fa_title": "需要双重认证",
-        "need_2fa_message": "Apple 已向你的受信任设备发送了 6 位验证码。\n请在“验证码”框中输入该 6 位码，然后点“提交验证码”。",
-        "twofa_status_html": "<p style='margin:0 0 6px 0'><b>🔐 需要双重认证</b></p><p style='margin:0 0 6px 0'>Apple 已向你的受信任设备发送了 6 位验证码。</p><p style='margin:0 0 0 0'>请在上方「验证码」框中输入该 6 位码，然后点「提交验证码」。</p>",
+        "need_2fa_message": "Apple 正在尝试向你的受信任设备发送验证码。\n如果手机没有弹出通知，请在手机上手动获取 6 位验证码，然后点“提交验证码”。",
+        "twofa_status_html": "<p style='margin:0 0 4px 0'><b>🔐 需要双重认证</b></p><p style='margin:0'>请查看受信任设备上的 Apple 通知；若没有弹出，请在手机上手动获取 6 位验证码，再在下方输入。</p>",
         "login_success_title": "登录成功",
         "login_success_message": "Apple ID 登录成功，账号状态已经确认。",
         "logout_progress": "正在注销...",
@@ -374,7 +383,7 @@ TRANSLATIONS = {
         "cleared_packages": "已清空 %d 个安装包。",
     },
     "en": {
-        "window_title": "iOS Old App Downloader v1.0.1",
+        "window_title": "iOS Old App Downloader v%s" % APP_VERSION,
         "app_title": "iOS Old App Downloader",
         "tray_tip": "iOS Old App Downloader",
         "show_window": "Show window",
@@ -415,6 +424,7 @@ TRANSLATIONS = {
         "diag_hint": "Check whether this network can reach Apple sign-in services",
         "done": "Done",
         "language": "Language:",
+        "software_version": "Version: v%s" % APP_VERSION,
         "language_auto": "Follow system (Auto)",
         "language_zh": "简体中文",
         "language_en": "English",
@@ -469,8 +479,8 @@ TRANSLATIONS = {
         "login_code_status": "Verifying the two-factor code...<br>Please wait.",
         "login_start_status": "Signing in...<br>Connecting to Apple services. Please wait.",
         "need_2fa_title": "Two-factor authentication required",
-        "need_2fa_message": "Apple sent a 6-digit code to your trusted device.\nEnter it in the Verification code box, then click Submit code.",
-        "twofa_status_html": "<p style='margin:0 0 6px 0'><b>🔐 Two-factor authentication required</b></p><p style='margin:0 0 6px 0'>Apple sent a 6-digit code to your trusted device.</p><p style='margin:0 0 0 0'>Enter it in the Verification code box above, then click Submit code.</p>",
+        "need_2fa_message": "Apple is trying to send a code to your trusted device.\nIf no notification appears, manually get a 6-digit code on your phone, then click Submit code.",
+        "twofa_status_html": "<p style='margin:0 0 4px 0'><b>🔐 Two-factor authentication required</b></p><p style='margin:0'>Check your trusted Apple device; if no notification appears, manually get a 6-digit code and enter it below.</p>",
         "login_success_title": "Sign-in successful",
         "login_success_message": "Apple ID sign-in succeeded and the account status was confirmed.",
         "logout_progress": "Signing out...",
@@ -1055,12 +1065,16 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedSize(580, 500)
+        # The 2FA status card and code row are shown dynamically. Keep enough
+        # vertical room for the rich text so it cannot be clipped.
+        self.setFixedSize(580, 558)
         self._dragging = False
         self._drag_start = QPoint()
         self._threads = []
         self._login_busy = False
         self._logout_busy = False
+        self._closing = False
+        self._post_2fa_retrying = False
         self._pending_pwd = ""
         self._login_phase = "idle"
         self._i18n_widgets = []
@@ -1133,8 +1147,8 @@ class SettingsDialog(QDialog):
         if self._login_phase == "idle":
             self._refresh_status()
 
-    def _run_tool_async(self, args, callback, timeout=60):
-        w = ToolWorker(args, timeout)
+    def _run_tool_async(self, args, callback, timeout=60, proxy=None):
+        w = ToolWorker(args, timeout, proxy=proxy)
         self._threads.append(w)
         _ACTIVE_TOOL_WORKERS.add(w)
 
@@ -1193,9 +1207,10 @@ class SettingsDialog(QDialog):
 
         self.status_card = QLabel()
         self.status_card.setWordWrap(True)
-        self.status_card.setMinimumHeight(70)
+        self.status_card.setMinimumHeight(92)
+        self.status_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self.status_card.setStyleSheet(
-            "QLabel{font-size:14px;line-height:160%;color:#222;background:rgba(255,255,255,85);"
+            "QLabel{font-size:14px;color:#222;background:rgba(255,255,255,85);"
             "border:1px solid rgba(0,122,255,90);border-radius:12px;"
             "padding:14px 16px;}")
         self.status_card.setTextFormat(Qt.TextFormat.RichText)
@@ -1242,7 +1257,9 @@ class SettingsDialog(QDialog):
         self.twofa_row.addWidget(self._field_label("code_label"))
         self.twofa_edit = QLineEdit()
         self._i18n_placeholder(self.twofa_edit, "code_placeholder")
-        self.twofa_edit.setMaxLength(6)
+        # Allow pasted codes containing a space or hyphen; submission normalizes
+        # them to the six ASCII digits accepted by Apple.
+        self.twofa_edit.setMaxLength(12)
         self.twofa_edit.setStyleSheet(INPUT_STYLE)
         self.twofa_edit.returnPressed.connect(self._do_login_with_2fa)
         self.twofa_row.addWidget(self.twofa_edit, 1)
@@ -1380,6 +1397,12 @@ class SettingsDialog(QDialog):
         language_row.addWidget(self.language_combo, 1)
         root.insertLayout(root.count() - 1, language_row)
 
+        version_label = self._i18n_text(QLabel(), "software_version")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version_label.setStyleSheet(
+            "QLabel{font-size:11px;color:#666;background:transparent;padding-top:2px;}")
+        root.addWidget(version_label)
+
         signature = QLabel('<a href="https://github.com/mango6i/iOSAppDownloader">by：果果</a>')
         signature.setOpenExternalLinks(True)
         signature.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
@@ -1428,6 +1451,9 @@ class SettingsDialog(QDialog):
     def _run_login(self, email, pwd, code=""):
         if getattr(self, "_login_busy", False):
             return
+        if not code:
+            # A fresh password attempt creates a fresh Apple challenge.
+            _clear_login_challenge_proxy()
         self._login_busy = True
         self._login_phase = "verifying_code" if code else "verifying_password"
         self.login_btn.setEnabled(False)
@@ -1441,12 +1467,25 @@ class SettingsDialog(QDialog):
                 "--non-interactive", "--format", "json"]
         if code:
             args += ["--auth-code", code]
-        _diagnostic("login_request", "with_2fa=%s" % bool(code))
-        self._run_tool_async(args, lambda rc, out: self._on_login_done(rc, out, code), timeout=90)
+        # A 2FA challenge can be tied to the route that created it. Force the
+        # verification request through that exact route instead of probing a
+        # different proxy and invalidating the freshly generated code.
+        proxy = _get_login_challenge_proxy() if code else None
+        _diagnostic("login_request", "with_2fa=%s mode=non_interactive" % bool(code))
+        self._run_tool_async(
+            args, lambda rc, out: self._on_login_done(rc, out, bool(code)),
+            timeout=90, proxy=proxy)
 
     def _on_login_done(self, rc, out, had_code):
         _diagnostic("login_response", "rc=%s with_2fa=%s output_length=%s" %
                     (rc, bool(had_code), len(out or "")))
+        # Closing Settings while a request is still running is a user action,
+        # not an authentication failure. Never show a late error over the main
+        # window after the dialog has gone away.
+        if self._closing or rc == -4:
+            self._login_busy = False
+            self._login_phase = "idle"
+            return
         self._login_busy = False
         self.login_btn.setEnabled(True)
         self.login_btn.setText(tr("login"))
@@ -1455,28 +1494,25 @@ class SettingsDialog(QDialog):
         low = (out or "").lower()
         authenticated, needs_code, _ = _auth_result(rc, out)
 
+        # ipatool can return a 2FA-related error even though Apple has already
+        # accepted the code and updated the stored session. Never declare a
+        # valid code rejected from that text alone; verify the real session.
+        if had_code:
+            self._begin_login_confirmation(True, out)
+            return
+
         if needs_code:
             self._login_phase = "waiting_code"
             self.twofa_row_widget.setVisible(True)
             self.twofa_edit.clear()
             self.twofa_edit.setFocus()
             self.status_card.setText(tr("twofa_status_html"))
+            MacStyleMessageBox(self, title=tr("need_2fa_title"),
+                               message=tr("need_2fa_message"), icon_type="info").exec()
             return
 
         if authenticated:
-            self._login_busy = True
-            self._login_phase = "confirming"
-            self.login_btn.setEnabled(False)
-            self.login_btn.setText(tr("confirm_login"))
-            self.logout_btn.setEnabled(False)
-            self.twofa_btn.setEnabled(False)
-            self.status_card.setText(localized(
-                "认证已通过<br>正在确认账号登录状态，请稍候。",
-                "Authentication accepted<br>Confirming account status..."))
-            self._run_tool_async(
-                ["auth", "info", "--format", "json"],
-                lambda info_rc, info_out: self._on_login_verified(info_rc, info_out, bool(had_code)),
-                timeout=45)
+            self._begin_login_confirmation(False, out)
             return
 
         self._login_phase = "idle"
@@ -1607,9 +1643,34 @@ class SettingsDialog(QDialog):
                                        (out or "")[:1500],
                                icon_type="warning").exec()
 
-    def _on_login_verified(self, rc, out, had_code):
+    def _begin_login_confirmation(self, had_code, auth_out=""):
+        if self._closing:
+            return
+        self._login_busy = True
+        self._login_phase = "confirming"
+        self.login_btn.setEnabled(False)
+        self.login_btn.setText(tr("confirm_login"))
+        self.logout_btn.setEnabled(False)
+        self.twofa_btn.setEnabled(False)
+        self.status_card.setText(localized(
+            "验证码已提交<br>正在确认真实登录状态，请稍候。" if had_code else
+            "认证已通过<br>正在确认账号登录状态，请稍候。",
+            "Code submitted<br>Confirming the actual sign-in status..." if had_code else
+            "Authentication accepted<br>Confirming account status..."))
+        self._run_tool_async(
+            ["auth", "info", "--format", "json"],
+            lambda info_rc, info_out: self._on_login_verified(
+                info_rc, info_out, bool(had_code), auth_out),
+            timeout=45,
+            proxy=_get_login_challenge_proxy())
+
+    def _on_login_verified(self, rc, out, had_code, auth_out=""):
         _diagnostic("login_status_confirmation", "rc=%s with_2fa=%s output_length=%s" %
                     (rc, bool(had_code), len(out or "")))
+        if self._closing:
+            self._login_busy = False
+            self._login_phase = "idle"
+            return
         self._login_busy = False
         self.login_btn.setEnabled(True)
         self.login_btn.setText(tr("login"))
@@ -1625,10 +1686,34 @@ class SettingsDialog(QDialog):
             self.pwd_edit.clear()
             self.twofa_edit.clear()
             self._pending_pwd = ""
+            _clear_login_challenge_proxy()
             self.twofa_row_widget.setVisible(False)
             MacStyleMessageBox(self, title=tr("login_success_title"),
                                message=tr("login_success_message"),
                                icon_type="success").exec()
+            return
+        if had_code and not self._post_2fa_retrying:
+            # A correct code has been observed to complete Apple's challenge
+            # while the code-submission command still exits with an error. A
+            # plain login on the same route then returns the completed session.
+            # Perform that recovery automatically before asking for a new code.
+            self._post_2fa_retrying = True
+            self._login_busy = True
+            self._login_phase = "confirming"
+            self.login_btn.setEnabled(False)
+            self.login_btn.setText(tr("confirm_login"))
+            self.logout_btn.setEnabled(False)
+            self.twofa_btn.setEnabled(False)
+            self.status_card.setText(localized(
+                "正在完成 Apple 登录会话<br>请稍候，不要重复提交验证码。",
+                "Completing the Apple sign-in session<br>Please wait; do not resubmit the code."))
+            args = ["auth", "login", "--email", self.email_edit.text().strip(),
+                    "--password", self._pending_pwd,
+                    "--non-interactive", "--format", "json"]
+            proxy = _get_login_challenge_proxy()
+            _diagnostic("post_2fa_session_retry", "started same_route=%s" % (proxy is not None))
+            self._run_tool_async(
+                args, self._on_post_2fa_retry_done, timeout=90, proxy=proxy)
             return
         self._login_phase = "waiting_code" if had_code else "idle"
         self.twofa_row_widget.setVisible(bool(had_code))
@@ -1640,12 +1725,49 @@ class SettingsDialog(QDialog):
             "The authentication request returned, but the account status could not be confirmed.<br><br>%s") % _ht(_friendly_auth_error(out)))
         MacStyleMessageBox(self, title=localized("登录未完成", "Sign-in did not complete"), message=message, icon_type="warning").exec()
 
+    def _on_post_2fa_retry_done(self, rc, out):
+        self._post_2fa_retrying = False
+        _diagnostic("post_2fa_session_retry", "rc=%s output_length=%s" %
+                    (rc, len(out or "")))
+        if self._closing:
+            self._login_busy = False
+            self._login_phase = "idle"
+            return
+        authenticated, needs_code, _ = _auth_result(rc, out)
+        if authenticated:
+            self._begin_login_confirmation(False, out)
+            return
+        if needs_code:
+            self._login_busy = False
+            self._login_phase = "waiting_code"
+            self.login_btn.setEnabled(True)
+            self.login_btn.setText(tr("login"))
+            self.logout_btn.setEnabled(True)
+            self.twofa_btn.setEnabled(True)
+            self.twofa_row_widget.setVisible(True)
+            self.twofa_edit.clear()
+            self.twofa_edit.setFocus()
+            self.status_card.setText(localized(
+                "Apple 仍要求双重认证<br>请使用手机上最新生成的 6 位验证码。",
+                "Apple still requires two-factor authentication<br>Use the newest 6-digit code generated on your device."))
+            MacStyleMessageBox(
+                self,
+                title=tr("need_2fa_title"),
+                message=localized(
+                    "登录状态尚未完成。请在手机上重新获取一个最新验证码后提交；不要重复使用刚才的旧验证码。",
+                    "The sign-in session is not complete. Generate the newest code on your device and submit it; do not reuse the previous code."),
+                icon_type="info").exec()
+            return
+        self._login_busy = False
+        self._on_login_done(rc, out, False)
+
     def _do_login_with_2fa(self):
         email = self.email_edit.text().strip()
-        code = self.twofa_edit.text().strip()
-        if not re.fullmatch(r"\d{6}", code):
+        code = _normalize_2fa_code(self.twofa_edit.text())
+        if not re.fullmatch(r"[0-9]{6}", code):
             MacStyleMessageBox(self, title=tr("fill_email_title"), message=tr("code_invalid"), icon_type="warning").exec()
             return
+        self.twofa_edit.setText(code)
         pwd = getattr(self, "_pending_pwd", "")
         if not pwd:
             MacStyleMessageBox(self, title=tr("fill_email_title"), message=tr("password_expired"),
@@ -1684,6 +1806,7 @@ class SettingsDialog(QDialog):
         self.pwd_edit.clear()
         self.twofa_edit.clear()
         self._pending_pwd = ""
+        _clear_login_challenge_proxy()
         if rc == 0:
             parent = self.parent()
             if parent is not None and hasattr(parent, "_on_login_status"):
@@ -1706,6 +1829,14 @@ class SettingsDialog(QDialog):
             os.startfile(IPAS_DIR)
         except Exception:
             QDesktopServices.openUrl(QUrl.fromLocalFile(IPAS_DIR))
+
+    def accept(self):
+        self._closing = True
+        super().accept()
+
+    def reject(self):
+        self._closing = True
+        super().reject()
 
     def _change_dir(self):
         global IPAS_DIR
@@ -1898,6 +2029,23 @@ def format_size(b):
         return "%.2f GB" % (b / 1073741824)
     return "%.1f MB" % (b / 1048576)
 
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """Display text normally while sorting the underlying value numerically."""
+
+    def __init__(self, text, number=0):
+        super().__init__(str(text))
+        try:
+            self._sort_number = int(number)
+        except Exception:
+            self._sort_number = 0
+
+    def __lt__(self, other):
+        if isinstance(other, NumericTableWidgetItem):
+            return self._sort_number < other._sort_number
+        return super().__lt__(other)
+
+
 def format_transfer_size(b):
     try:
         b = max(0, int(b or 0))
@@ -2020,9 +2168,11 @@ def api_fetch_history_apple(app_id):
     for row in rows:
         meta = metadata_by_id.get(str(row["external_id"]))
         if not meta:
-            row["version"] = row.get("version") or tr("not_available")
+            # Keep missing metadata empty. The table renders an aligned dash;
+            # it must not invent a version or place a status phrase in a data column.
+            row["version"] = row.get("version") or ""
             continue
-        row["version"] = str(meta.get("version") or row.get("version") or tr("not_available"))
+        row["version"] = str(meta.get("version") or row.get("version") or "")
         row["date"] = str(meta.get("date") or "")
         row["size"] = meta.get("size") or 0
     return rows
@@ -2600,6 +2750,24 @@ _AUTO_EXIT_STATE = {"checked": False, "proxy": None, "score": 0}
 _LAST_LOGIN_ROUTES = []
 
 
+def _get_login_challenge_proxy():
+    """Return the route that created the current Apple 2FA challenge."""
+    with _LOGIN_CHALLENGE_PROXY_LOCK:
+        return _LOGIN_CHALLENGE_PROXY
+
+
+def _set_login_challenge_proxy(proxy):
+    global _LOGIN_CHALLENGE_PROXY
+    with _LOGIN_CHALLENGE_PROXY_LOCK:
+        _LOGIN_CHALLENGE_PROXY = proxy or ""
+
+
+def _clear_login_challenge_proxy():
+    global _LOGIN_CHALLENGE_PROXY
+    with _LOGIN_CHALLENGE_PROXY_LOCK:
+        _LOGIN_CHALLENGE_PROXY = None
+
+
 def _port_open(host, port, timeout=0.3):
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
@@ -3121,7 +3289,12 @@ def _auth_result(rc, out):
         success = True
         match = re.search(r"[\w.+-]+@[\w.-]+", text)
         identity = match.group(0) if match else ""
-    return rc == 0 and success and not needs_code, needs_code, identity
+    # Interactive ipatool output keeps the earlier 2FA prompt in the same
+    # stream even after the submitted code succeeds. A confirmed success JSON
+    # must therefore take precedence over stale prompt text.
+    if rc == 0 and success:
+        return True, False, identity
+    return False, needs_code, identity
 
 
 def _is_retryable_login_error(out):
@@ -3213,13 +3386,25 @@ def _redact_engine_output(out):
         r'\1"***"', value, flags=re.IGNORECASE)
 
 
-def run_tool(args, timeout=120):
+def run_tool(args, timeout=120, proxy=None):
     tool = IPATOOL_PATH
     if not tool or not os.path.exists(tool):
         return -1, "ipatool.exe not found"
     command = _ipatool_command(args)
     is_login = len(args) >= 2 and list(args[:2]) == ["auth", "login"]
-    routes = _candidate_proxies() if is_login else [_resolve_proxy()]
+    has_auth_code = is_login and "--auth-code" in args
+    if proxy is not None:
+        routes = [proxy]
+    elif is_login:
+        routes = _candidate_proxies()
+        # Apple can bind a verification challenge to the network/session that
+        # created it. Reuse that route first when submitting the code instead
+        # of silently starting with a different proxy on every attempt.
+        challenge_proxy = _get_login_challenge_proxy() if has_auth_code else None
+        if challenge_proxy is not None:
+            routes = [challenge_proxy] + [route for route in routes if route != challenge_proxy]
+    else:
+        routes = [_resolve_proxy()]
     routes = routes or [""]
     if is_login:
         _LAST_LOGIN_ROUTES[:] = routes
@@ -3256,11 +3441,17 @@ def run_tool(args, timeout=120):
             if is_login:
                 _logged, needs_code, _who = _auth_result(r.returncode, out)
                 if needs_code:
+                    _set_login_challenge_proxy(proxy)
+                    return r.returncode, out
+                if _logged:
+                    _set_login_challenge_proxy(proxy)
                     return r.returncode, out
                 if (_is_retryable_login_error(out)
                         and route_index + 1 < len(routes)):
                     time.sleep(1.0 + route_index * 0.5)
                     continue
+                if not has_auth_code:
+                    _clear_login_challenge_proxy()
             return r.returncode, out
         return last_rc, last_out or "登录请求未完成"
 
@@ -3288,14 +3479,15 @@ class WorkerSignals(QObject):
 class ToolWorker(QThread):
     done = pyqtSignal(int, str)
 
-    def __init__(self, args, timeout=60):
+    def __init__(self, args, timeout=60, proxy=None):
         super().__init__()
         self.args = args
         self.timeout = timeout
+        self.proxy = proxy
 
     def run(self):
         try:
-            rc, out = run_tool(self.args, timeout=self.timeout)
+            rc, out = run_tool(self.args, timeout=self.timeout, proxy=self.proxy)
         except Exception as exc:
             _diagnostic("tool_worker_exception", repr(exc))
             rc, out = -3, str(exc)
@@ -4317,11 +4509,14 @@ class TransparentMacWindow(QMainWindow):
         self.history_table.horizontalHeader().setMinimumSectionSize(50)
         self.history_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self.history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.history_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.history_table.setColumnWidth(0, 50)
+        self.history_table.setColumnWidth(1, 110)
+        self.history_table.setColumnWidth(2, 135)
+        self.history_table.setColumnWidth(3, 125)
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.history_table.customContextMenuRequested.connect(self._on_history_context_menu)
@@ -4369,10 +4564,18 @@ class TransparentMacWindow(QMainWindow):
                 "date": row.get("date") or "",
             })
             self.history_table.setItem(r, 0, cb)
-            self.history_table.setItem(r, 1, QTableWidgetItem(row["version"]))
-            self.history_table.setItem(r, 2, QTableWidgetItem(str(row["external_id"])))
-            self.history_table.setItem(r, 3, QTableWidgetItem(format_size(row.get("size"))))
-            self.history_table.setItem(r, 4, QTableWidgetItem(row["date"]))
+            version_item = QTableWidgetItem(str(row.get("version") or "—"))
+            version_id = str(row.get("external_id") or "")
+            version_id_item = NumericTableWidgetItem(version_id, version_id)
+            size_value = row.get("size") or 0
+            size_item = QTableWidgetItem(format_size(size_value) if size_value else "—")
+            date_item = QTableWidgetItem(str(row.get("date") or "—"))
+            for item in (version_item, version_id_item, size_item, date_item):
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.history_table.setItem(r, 1, version_item)
+            self.history_table.setItem(r, 2, version_id_item)
+            self.history_table.setItem(r, 3, size_item)
+            self.history_table.setItem(r, 4, date_item)
         self.history_table.setSortingEnabled(True)
         self.history_table.sortItems(2, Qt.SortOrder.DescendingOrder)
         self.history_app_info.setText(
@@ -5317,3 +5520,4 @@ if __name__ == "__main__":
     except Exception as _f:
         import traceback
         _show_error("致命错误", "%s\n\n%s" % (_f, traceback.format_exc()))
+
