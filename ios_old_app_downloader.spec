@@ -6,7 +6,7 @@ import os
 # SPECPATH is provided by PyInstaller and keeps the build portable.
 ROOT = Path(SPECPATH) if 'SPECPATH' in globals() else Path.cwd()
 WINDOWS_DIR = Path(os.environ.get('WINDIR', 'C:/Windows'))
-hiddenimports = ['PyQt6.sip']
+hiddenimports = ['PyQt6.sip', 'winpty', 'winpty.ptyprocess', 'winpty._winpty']
 version_file = str(ROOT / 'version_info.txt')
 
 
@@ -45,7 +45,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='iOSAppDownloader_v1.0.5',
+    name='iOSAppDownloader_v1.0.6',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -61,4 +61,3 @@ exe = EXE(
     icon=str(ROOT / 'appstore.ico'),
     version=version_file,
 )
-

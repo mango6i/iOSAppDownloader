@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.0.6 — 2026-09-04
+
+### 中文
+
+- 重做 Apple ID 登录流程：使用 Windows 真实伪终端承载单个 `ipatool-rs` 进程。
+- 密码和双重认证码在同一个登录会话内完成，保留 Apple Cookie 与 SAP 签名状态，避免验证码被新进程判定为过期。
+- 登录命令不再把密码放入命令行参数；登录结束或退出软件时仍会清理临时会话。
+- 增加 `pywinpty` 运行依赖，并加入打包隐藏导入配置。
+
+### English
+
+- Reworked Apple ID sign-in around one `ipatool-rs` process hosted by a real Windows pseudo-terminal.
+- The password and two-factor code now use the same Apple session, preserving cookies and the SAP signer so codes are not invalidated by a second process.
+- The password is no longer placed in the command-line arguments; the temporary session is still cleared when signing out or exiting.
+- Added the `pywinpty` runtime dependency and packaging hidden imports.
+
 ## v1.0.5 — 2026-09-02
 
 ### 中文
@@ -85,4 +101,3 @@
 ### 已知限制 / Known limitation
 
 The bundled `ipatool-rs` command-line component currently accepts the Apple ID password only through its `--password` argument. The application does not log or persist that argument, but removing the password from the process command line requires an upstream `ipatool-rs` change or rebuild that supports secure stdin/file input.
-

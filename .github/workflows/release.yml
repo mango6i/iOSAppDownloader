@@ -8,6 +8,7 @@ on:
       - ios_old_app_downloader.py
       - ios_old_app_downloader.spec
       - version_info.txt
+      - requirements.txt
       - appstore.ico
       - ipatool/**
       - RELEASE_NOTES_v*.md
@@ -36,7 +37,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip 2>&1 | Tee-Object -FilePath build.log -Append
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pip install PyInstaller PyQt6 2>&1 | Tee-Object -FilePath build.log -Append
+          python -m pip install -r requirements.txt 2>&1 | Tee-Object -FilePath build.log -Append
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Read application version
