@@ -8,6 +8,7 @@
 - 恢复已验证可用的 `ipatool-rs` 非交互式登录与双重认证续接流程；验证码提交固定复用首次登录使用的网络线路。
 - 验证码提交后再次读取真实账号状态，避免仅凭一次命令输出误判正确验证码失败。
 - 修复已登录账号查询从未获取过的免费应用时出现 `unexpected response: empty songList`：官方列表查询现在会同时传入 App ID 和 Bundle ID，自动获取一次免费许可后重试；付费应用不会自动购买。
+- 如果 Apple 在获取免费许可后仍返回空官方列表，自动回退到“免登录查询”填充历史版本表，不再弹窗阻断操作。
 - 将内置 `ipatool.exe` 放入独立运行目录，避免与 PyInstaller 内的 Python/Qt DLL 发生加载冲突。
 - 打包配置允许在没有本地 SAP 种子缓存时正常构建，并将程序文件名和文件属性升级为 `iOSAppDownloader_v1.0.7.exe`。
 
@@ -17,6 +18,7 @@
 - Restored the proven non-interactive `ipatool-rs` sign-in and two-factor continuation flow, keeping verification on the same network route as the initial challenge.
 - Rechecks the actual account session after code submission instead of rejecting a valid code from one command result.
 - Fixes `unexpected response: empty songList` for free apps never obtained by the signed-in account: the official lookup now supplies both App ID and bundle ID, obtains the free license once, and retries. Paid apps are never purchased automatically.
+- Falls back to Login-free lookup when Apple still returns an empty official list after the free-license retry, keeping the history table usable instead of blocking with an error dialog.
 - Packages `ipatool.exe` in an isolated runtime directory to prevent DLL collisions with bundled Python and Qt libraries.
 - Allows builds without a local SAP seed cache and updates the executable name and metadata to `iOSAppDownloader_v1.0.7.exe`.
 

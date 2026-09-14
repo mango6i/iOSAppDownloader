@@ -2146,6 +2146,19 @@ def _is_empty_song_list_response(output):
             ("failed to list versions" in low and "unexpected response" in low))
 
 
+def _history_local_fallback_notice():
+    return localized(
+        "Apple 没有返回该账号的官方版本列表，已自动改用“免登录查询”。这些版本 ID 可继续勾选下载；如果下载失败，通常是该 Apple ID 未获取过该应用或商店区域不一致。",
+        "Apple did not return the official version list for this account, so the app automatically used Login-free lookup. These version IDs can still be selected for download; if downloading fails, the Apple ID may not own the app or may use a different storefront.")
+
+
+def _fetch_history_local_fallback(app_id):
+    rows = api_fetch_history_local(app_id)
+    if rows:
+        rows[0]["_notice"] = _history_local_fallback_notice()
+    return rows
+
+
 def _official_version_list_args(app_id, bundle_identifier=""):
     args = ["version", "list"]
     if app_id:
@@ -2183,6 +2196,8 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
         retry_rc, retry_out = run_tool(version_args, timeout=90)
         if retry_rc == 0:
             rc, out = retry_rc, retry_out
+        elif _is_empty_song_list_response(retry_out):
+            return _fetch_history_local_fallback(app_id)
         else:
             detail = _friendly_auth_error(retry_out)
             if purchase_rc != 0:
@@ -2194,19 +2209,7 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
                 "The app tried to obtain the free license, but Apple still did not return an official version list. Make sure the Apple ID storefront matches the selected search region, or use Login-free lookup.\n%s") % detail)
     if rc != 0:
         if _is_empty_song_list_response(out):
-            if not bundle_identifier:
-                reason = localized(
-                    "缺少应用包名，无法自动获取免费许可。请返回搜索页后重新选择该应用。",
-                    "The bundle identifier is missing, so the free license cannot be obtained automatically. Return to search and select the app again.")
-            elif not allow_auto_purchase:
-                reason = localized(
-                    "这个 Apple ID 尚未获取过该应用，Apple 因此没有返回官方版本列表。付费应用不会自动购买；你仍可使用‘免登录查询’。",
-                    "This Apple ID has not obtained the app, so Apple returned no official version list. Paid apps are never purchased automatically; you can still use Login-free lookup.")
-            else:
-                reason = localized(
-                    "Apple 没有返回该应用的官方版本列表。请确认 Apple ID 的商店区域与当前搜索区域一致，或使用‘免登录查询’。",
-                    "Apple returned no official version list for this app. Make sure the Apple ID storefront matches the selected search region, or use Login-free lookup.")
-            raise RuntimeError(reason)
+            return _fetch_history_local_fallback(app_id)
         raise RuntimeError(_friendly_auth_error(out) or "历史版本查询失败")
     rows = []
     for rec in _json_records(out):
@@ -4631,6 +4634,9 @@ class TransparentMacWindow(QMainWindow):
     def _on_history_data(self, rows, generation=None):
         if generation is not None and generation != self._history_generation:
             return
+        notice = ""
+        if rows:
+            notice = str(rows[0].pop("_notice", "") or "").strip()
         self.history_rows = rows
         self.history_table.setSortingEnabled(False)
         self.history_table.setRowCount(len(rows))
@@ -4659,11 +4665,12 @@ class TransparentMacWindow(QMainWindow):
             self.history_table.setItem(r, 4, date_item)
         self.history_table.setSortingEnabled(True)
         self.history_table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        count_text = tr("history_count") % (
+            tr("current_app") % (self.current_app["track_name"],
+                                  self.current_app["bundle_id"],
+                                  self.current_app["track_id"]), len(rows))
         self.history_app_info.setText(
-            tr("history_count") % (
-                tr("current_app") % (self.current_app["track_name"],
-                                      self.current_app["bundle_id"],
-                                      self.current_app["track_id"]), len(rows)))
+            "%s\n%s" % (notice, count_text) if notice else count_text)
 
     def _on_history_finished(self, generation=None, worker=None):
         if generation is not None and generation != self._history_generation:
