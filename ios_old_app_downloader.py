@@ -1682,7 +1682,7 @@ class SettingsDialog(QDialog):
         self.login_btn.setText(tr("login"))
         self.logout_btn.setEnabled(True)
         self.twofa_btn.setEnabled(True)
-        logged, _, who = _auth_result(rc, out)
+        logged, needs_code, who = _auth_result(rc, out)
         if logged:
             self._login_phase = "idle"
             self.status_card.setText(tr("status_logged") + _ht(who or self.email_edit.text().strip()))
@@ -1697,6 +1697,26 @@ class SettingsDialog(QDialog):
             MacStyleMessageBox(self, title=tr("login_success_title"),
                                message=tr("login_success_message"),
                                icon_type="success").exec()
+            return
+        if had_code and needs_code:
+            self._login_phase = "waiting_code"
+            self.login_btn.setEnabled(True)
+            self.login_btn.setText(tr("login"))
+            self.logout_btn.setEnabled(True)
+            self.twofa_btn.setEnabled(True)
+            self.twofa_row_widget.setVisible(True)
+            self.twofa_edit.clear()
+            self.twofa_edit.setFocus()
+            self.status_card.setText(localized(
+                "Apple 仍要求双重认证<br>请在手机上重新生成最新 6 位验证码后再提交。",
+                "Apple still requires two-factor authentication<br>Generate a new 6-digit code on your device before submitting again."))
+            MacStyleMessageBox(
+                self,
+                title=tr("need_2fa_title"),
+                message=localized(
+                    "刚才的验证码没有完成登录会话。请在手机上重新生成一个最新验证码，再提交一次；不要重复点提交或重复使用旧验证码。",
+                    "The previous code did not complete the sign-in session. Generate a new code on your device and submit it once; do not repeatedly submit or reuse the old code."),
+                icon_type="info").exec()
             return
         if had_code and not self._post_2fa_retrying:
             # A correct code has been observed to complete Apple's challenge
@@ -1768,6 +1788,10 @@ class SettingsDialog(QDialog):
         self._on_login_done(rc, out, False)
 
     def _do_login_with_2fa(self):
+        if getattr(self, "_login_busy", False):
+            return
+        if getattr(self, "_login_phase", "") not in ("waiting_code", "idle"):
+            return
         email = self.email_edit.text().strip()
         code = _normalize_2fa_code(self.twofa_edit.text())
         if not re.fullmatch(r"[0-9]{6}", code):
@@ -3985,6 +4009,7 @@ class TransparentMacWindow(QMainWindow):
         self._stop_content_worker()
         if self.tray_icon:
             self.tray_icon.hide()
+        _clear_runtime_auth()
         QApplication.quit()
 
     def _stop_content_worker(self):
