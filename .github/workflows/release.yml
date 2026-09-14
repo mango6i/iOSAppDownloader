@@ -7,11 +7,10 @@ on:
     paths:
       - ios_old_app_downloader.py
       - ios_old_app_downloader.spec
-      - version_info.txt
       - requirements.txt
       - appstore.ico
       - ipatool/**
-      - RELEASE_NOTES_v*.md
+      - docs/releases/*.md
       - .github/workflows/release.yml
   workflow_dispatch:
 
@@ -60,22 +59,22 @@ jobs:
             exit 1
           }
 
-      - name: Record failure details
+      - name: Preserve failure details
         if: failure()
         shell: pwsh
         run: |
           if (-not (Test-Path -LiteralPath "build.log")) {
             "The workflow failed before a build log could be created." | Set-Content -LiteralPath "build.log" -Encoding UTF8
           }
-          Copy-Item -LiteralPath "build.log" -Destination ".github/last-build-error.log" -Force
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/last-build-error.log
-          git commit -m "ci: record release build failure [skip ci]"
-          if ($LASTEXITCODE -eq 0) {
-            git push
-          }
-          exit 1
+          Get-Content -LiteralPath "build.log" | Write-Host
+
+      - name: Upload failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-log
+          path: build.log
+          retention-days: 7
 
       - name: Create or update GitHub release
         shell: pwsh
@@ -84,7 +83,7 @@ jobs:
         run: |
           $tag = "v$env:APP_VERSION"
           $asset = "dist/iOSAppDownloader_v$env:APP_VERSION.exe"
-          $notes = "RELEASE_NOTES_v$env:APP_VERSION.md"
+          $notes = "docs/releases/v$env:APP_VERSION.md"
           if (-not (Test-Path -LiteralPath $notes)) {
             $notes = "CHANGELOG.md"
           }

@@ -58,14 +58,16 @@ The following screenshots show the actual software interface. The account and pa
 
 ## Release
 
-This repository includes the Windows release and the project source:
+This repository contains the project source. Windows binaries are published only through GitHub Releases:
 
-- `iOSAppDownloader.exe`: ready-to-use Windows build
+- `iOSAppDownloader_vVERSION.exe`: ready-to-use Windows build in Releases
 - `ios_old_app_downloader.py`: main source file
-- `ios_old_app_downloader.spec`, `version_info.txt`, and `appstore.ico`: packaging files
+- `ios_old_app_downloader.spec` and `appstore.ico`: packaging configuration and icon; the versioned filename and Windows metadata are generated from the application source
+- `requirements.txt`: Python build dependencies
 - `ipatool/`: required ipatool-rs runtime components
+- `docs/releases/`: release notes organized by version
 
-Download the EXE for normal use, or inspect the source and rebuild it in your own environment.
+Download the latest EXE from Releases for normal use, or inspect the source and rebuild it in your own environment.
 
 ### Customizing the language and startup prompt
 

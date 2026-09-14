@@ -58,14 +58,16 @@
 
 ## 发布说明
 
-仓库同时提供 Windows 成品程序和项目源码：
+仓库提供项目源码，Windows 成品统一放在右侧的 GitHub Releases 中：
 
-- `iOSAppDownloader.exe`：开箱即用的 Windows 成品
+- `iOSAppDownloader_v版本号.exe`：Releases 中的开箱即用 Windows 成品
 - `ios_old_app_downloader.py`：主程序源码
-- `ios_old_app_downloader.spec`、`version_info.txt`、`appstore.ico`：打包所需文件
+- `ios_old_app_downloader.spec`、`appstore.ico`：打包配置与图标；版本号和 EXE 文件属性会从主程序自动生成
+- `requirements.txt`：Python 构建依赖
 - `ipatool/`：运行所需的 ipatool-rs 组件
+- `docs/releases/`：按版本归档的发布说明
 
-普通用户直接下载 `iOSAppDownloader.exe` 即可；开发者可以查看源码并按自己的环境重新打包。
+普通用户直接从 Releases 下载最新版 EXE；开发者可以查看源码并按自己的环境重新打包。
 
 ### 修改语言和首页提示
 
