@@ -73,7 +73,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QStackedWidget, QTabBar, QSizePolicy, QSpacerItem, QFileDialog)
 from PyQt6.QtGui import (QColor, QLinearGradient, QRadialGradient, QConicalGradient,
                          QBrush, QPainter, QPainterPath, QFont, QIcon, QPixmap,
-                         QAction, QPen, QImage, QDesktopServices)
+                         QAction, QPen, QImage, QDesktopServices, QFontMetrics)
 from PyQt6.QtCore import (Qt, QPoint, QPointF, QRect, QTimer, pyqtSignal, QObject, QThread,
                          QUrl, QSize, QStandardPaths, QLocale)
 
@@ -927,16 +927,19 @@ class GradientFrame(QWidget):
 
 class MacStyleMessageBox(QDialog):
     """"""
+    MAX_HEIGHT = 620
+    MAX_WIDTH = 520
+    MAX_WIDTH_INNER = MAX_WIDTH - 24 * 2
+
     def __init__(self, parent=None, title="提示", message="", icon_type="info", buttons=None,
                  rich_message=False):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        line_count = max(
-            len((message or "").splitlines()),
-            len(re.findall(r"<br\s*/?>", message or "", flags=re.IGNORECASE)) + 1)
-        extra_lines = max(0, line_count - 3)
-        self.setFixedSize(520, min(620, 240 + extra_lines * 20))
+        # 高度不再按行数粗略估算，改为在 _setup_ui 中依据真实文本度量计算，
+        # 否则长文案会被裁切或被底部按钮覆盖。
+        self.setFixedWidth(self.MAX_WIDTH)
+        self.setMaximumHeight(self.MAX_HEIGHT)
         self._dragging = False
         self._drag_start = QPoint()
         self.title = title
@@ -969,8 +972,25 @@ class MacStyleMessageBox(QDialog):
             msg.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
         else:
             msg.setTextFormat(Qt.TextFormat.PlainText)
-        layout.addWidget(msg)
-        layout.addStretch()
+        text_height, total_height = self._measure_message(msg)
+        # 锁定文本自身高度，避免竖向空间不足时 QLabel 被压缩后与按钮重叠。
+        msg.setMinimumHeight(text_height)
+        self._scroll_host = None
+        if total_height > self.MAX_HEIGHT:
+            # 文案超出上限时改为可滚动区域，保证内容完整可读。
+            holder = QScrollArea()
+            holder.setWidgetResizable(True)
+            holder.setFrameShape(QFrame.Shape.NoFrame)
+            holder.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            holder.setStyleSheet(
+                "QScrollArea{background:transparent;border:none;}"
+                "QScrollArea > QWidget > QWidget{background:transparent;}")
+            holder.setWidget(msg)
+            layout.addWidget(holder, 1)
+            self._scroll_host = holder
+        else:
+            layout.addWidget(msg)
+            layout.addStretch()
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_style = "QPushButton{background:rgba(80,80,80,200);color:#fff;border-radius:8px;font-size:14px;font-weight:600;}"
@@ -988,7 +1008,29 @@ class MacStyleMessageBox(QDialog):
                 btn.clicked.connect(self.accept)
             btn_layout.addWidget(btn)
         layout.addLayout(btn_layout)
+        self.setFixedHeight(min(self.MAX_HEIGHT, total_height))
         center_window(self)
+
+    def _measure_message(self, msg):
+        """按 13px 字体与固定内宽计算文本真实高度及窗口所需总高。
+
+        返回 (文本高度, 窗口总高度)。使用 QFontMetrics 而非按行数估算，
+        因为中文长句在 520px 宽度下会折行，行数与 \\n 数量无关。
+        """
+        inner_width = self.MAX_WIDTH_INNER
+        font = msg.font()
+        font.setPixelSize(13)
+        metrics = QFontMetrics(font)
+        flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.TextFlag.TextExpandTabs)
+        plain = re.sub(r"<br\s*/?>", "\n", self.message or "", flags=re.IGNORECASE)
+        if self.rich_message:
+            plain = re.sub(r"<[^>]+>", "", plain)
+        rect = metrics.boundingRect(QRect(0, 0, inner_width, 100000), flags, plain)
+        line_h = max(metrics.height(), 18)
+        text_height = max(rect.height(), line_h)
+        # 窗口总高 = 上下边距 + 标题行 + 文本 + 按钮行 + 布局间距 + 文本内边距
+        chrome = 20 + 20 + 40 + 34 + 12 * 3 + 8
+        return text_height + 8, text_height + chrome
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -3434,6 +3476,31 @@ def _network_blocked_tip():
 def _friendly_auth_error(out):
     text = (out or "").strip()
     low = text.lower()
+    # Apple 对无法通过认证的凭据返回空 204（实测两个端点、两条出口结果一致），
+    # 该判定必须优先于网络类判定，否则会把凭据问题误导成「网络出口被限制」。
+    if _is_credential_rejected_error(text):
+        return localized(
+            "Apple 认证服务返回了空响应（HTTP 204），没有给出任何账号数据。\n\n"
+            "这表示 Apple 无法通过本次提交的 Apple ID / 密码完成认证。"
+            "对于无法验证的凭据，Apple 统一返回空响应，不会区分「账号不存在」与「密码错误」，"
+            "所以这通常指向账号或密码问题，而不是网络问题。\n\n"
+            "建议按顺序排查：\n"
+            "1. 核对 Apple ID 与密码（注意大小写，粘贴时避免带上空格）；\n"
+            "2. 用同一账号在 iPhone / iPad 的「设置 → App Store」登录一次，"
+            "确认账号未被锁定、未被要求修改密码；\n"
+            "3. 若账号已开启双重认证，请确保受信任设备在线以便接收验证码。\n\n"
+            "本机网络已实测连通；若确为网络故障，软件会自动列出线路信息。",
+            "Apple returned an empty response (HTTP 204) with no account data.\n\n"
+            "This means Apple could not authenticate the submitted Apple ID / password. For credentials "
+            "it cannot verify, Apple always returns an empty response and does not distinguish "
+            "\"account not found\" from \"wrong password\", so this usually points to the account or the "
+            "password rather than a network problem.\n\n"
+            "Check in this order:\n"
+            "1. Verify the Apple ID and password (watch for letter case and stray spaces);\n"
+            "2. Sign in with the same account under Settings -> App Store on an iPhone / iPad to confirm "
+            "the account is not locked or asked to change its password;\n"
+            "3. If two-factor authentication is enabled, keep a trusted device online to receive the code.\n\n"
+            "Network connectivity on this machine has already been verified.")
     if ("failed to retrieve redirect location" in low
             or "something went wrong" in low):
         return localized(
@@ -3463,11 +3530,29 @@ def _friendly_auth_error(out):
                                     "No confirmable sign-in result was received. Try again.")
 
 
+def _is_credential_rejected_error(out):
+    """判断 Apple 是否以「空 204」形式拒绝了本次凭据。
+
+    实测结论（native/fast 与 legacy MZFinance 两个端点，Clash 与直连两条出口）：
+    Apple 对无法通过认证的凭据统一返回 HTTP 204 且响应体为空，不区分
+    「账号不存在」与「密码错误」。该响应与网络出口无关，因此不能用于触发
+    线路轮换，否则会把凭据问题误报成「网络出口被限制」。
+    """
+    low = (out or "").lower()
+    if re.search(r"empty authentication response\s*\(http\s*204", low):
+        return True
+    if re.search(r"http[)\s:]*\s*204\b", low):
+        return True
+    return "204 no content" in low
+
 def _is_transient_apple_edge_error(out):
     low = (out or "").lower()
-    if re.search(r"http[)\s:]*\s*(204|301|302|307|404|429|500|502|503|504)", low):
+    # HTTP 204 属于凭据被拒，不是网络瞬时故障，必须先行排除。
+    if _is_credential_rejected_error(out):
+        return False
+    if re.search(r"http[)\s:]*\s*(301|302|307|404|429|500|502|503|504)", low):
         return True
-    if re.search(r"\b(204|301|302|404|500|502|503|504)\b[^\n]{0,24}(forbidden|not found|"
+    if re.search(r"\b(301|302|404|500|502|503|504)\b[^\n]{0,24}(forbidden|not found|"
                  r"unavailable|no content|moved permanently|bad gateway)", low):
         return True
     return any(k in low for k in (
