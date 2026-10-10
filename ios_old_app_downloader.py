@@ -3647,6 +3647,12 @@ class InteractiveLoginWorker(QThread):
         self.done.emit(last_rc, last_out or "登录请求未完成")
 
 
+# CoreFP/CommerceKit 的 SAP 调用在 unicorn 模拟器里执行，递归与调用深度较大。
+# QThread 的默认栈远小于主线程，在子线程里跑模拟会因栈溢出导致进程直接崩溃
+# （表现为"点击登录后闪退"，且没有 Python 异常），因此必须为登录线程放大栈。
+SAP_WORKER_STACK_SIZE = 64 * 1024 * 1024
+
+
 class NativeLoginWorker(QThread):
     """Authenticate directly through Apple's protocol and local SAP runtime."""
 
@@ -3654,6 +3660,7 @@ class NativeLoginWorker(QThread):
     done = pyqtSignal(int, str)
 
     def __init__(self, email, password, timeout=180):
+        QThread.setStackSize(SAP_WORKER_STACK_SIZE)
         super().__init__()
         self.email = str(email)
         self.password = str(password)
