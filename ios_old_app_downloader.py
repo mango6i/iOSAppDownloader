@@ -3660,8 +3660,13 @@ class NativeLoginWorker(QThread):
     done = pyqtSignal(int, str)
 
     def __init__(self, email, password, timeout=180):
-        QThread.setStackSize(SAP_WORKER_STACK_SIZE)
         super().__init__()
+        # 栈大小必须在线程 start() 之前设置。
+        # 注意：PyQt6 6.x 把 QThread.setStackSize 绑定为实例方法（methoddescriptor），
+        # 按静态方式 QThread.setStackSize(int) 调用会抛
+        # "first argument of unbound method must have type 'QThread'"，
+        # 因此这里按实例形式调用。
+        self.setStackSize(SAP_WORKER_STACK_SIZE)
         self.email = str(email)
         self.password = str(password)
         self.timeout = int(timeout)
