@@ -1,2 +1,4 @@
 PyQt6
 PyInstaller
+pywinpty
+unicorn>=2.1.4
