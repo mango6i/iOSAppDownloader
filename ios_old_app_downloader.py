@@ -1057,7 +1057,7 @@ class MacStyleMessageBox(QDialog):
         r = self.rect()
         path.addRoundedRect(r.x() + 1, r.y() + 1, r.width() - 2, r.height() - 2, 15, 15)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(255, 255, 255, 238)))
+        painter.setBrush(QBrush(QColor(255, 255, 255, 255)))
         painter.drawPath(path)
         border_path = QPainterPath()
         border_path.addRoundedRect(r.x() + 1, r.y() + 1, r.width() - 2, r.height() - 2, 15, 15)
@@ -1262,7 +1262,19 @@ class SettingsDialog(QDialog):
             "border:1px solid rgba(0,122,255,90);border-radius:12px;"
             "padding:14px 16px;}")
         self.status_card.setTextFormat(Qt.TextFormat.RichText)
-        root.addWidget(self.status_card)
+        # 状态卡片文案可能很长（例如 HTTP 204 凭据提示），固定尺寸的面板放不下，
+        # 直接进入布局会被压缩导致文字截断。改为放进滚动区，超出部分可滚动查看。
+        self.status_scroll = QScrollArea()
+        self.status_scroll.setWidgetResizable(True)
+        self.status_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.status_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.status_scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollArea > QWidget > QWidget{background:transparent;}")
+        self.status_scroll.setWidget(self.status_card)
+        self.status_scroll.setMinimumHeight(92)
+        self.status_scroll.setMaximumHeight(200)
+        root.addWidget(self.status_scroll)
 
         row = QHBoxLayout()
         row.setSpacing(8)
