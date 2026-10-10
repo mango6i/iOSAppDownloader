@@ -6,20 +6,28 @@ import os
 # SPECPATH is provided by PyInstaller and keeps the build portable.
 ROOT = Path(SPECPATH) if 'SPECPATH' in globals() else Path.cwd()
 WINDOWS_DIR = Path(os.environ.get('WINDIR', 'C:/Windows'))
-hiddenimports = ['PyQt6.sip', 'winpty', 'winpty.ptyprocess', 'winpty._winpty',
-                 'unicorn', 'unicorn.unicorn', 'unicorn.unicorn_py3']
+hiddenimports = ['PyQt6.sip', 'winpty', 'winpty.ptyprocess', 'winpty._winpty']
 version_file = str(ROOT / 'version_info.txt')
 
-# unicorn 是 C 扩展包，其原生库（unicorn/lib/unicorn.dll）不会被自动收集。
-# 缺失时运行期会报 "Failed to load the Unicorn dynamic library"，
-# 进而导致 SAP 运行时不可用，因此必须显式收集。
+# unicorn 是 C 扩展包，PyInstaller 无法静态分析其结构：
+#   1) 原生库 unicorn/lib/unicorn.dll 不会被自动收集，缺失时报
+#      "Failed to load the Unicorn dynamic library"；
+#   2) 架构常量模块（如 x86_const，位于 unicorn/unicorn_py3/arch/intel.py）
+#      由包内动态导入，缺失时报
+#      "No module named 'unicorn.unicorn_py3.arch.intel'"。
+# 因此这里必须同时收集：全部子模块 + 原生库 + 随包数据。
 try:
-    from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
+    from PyInstaller.utils.hooks import (
+        collect_submodules, collect_dynamic_libs, collect_data_files)
+    unicorn_modules = collect_submodules('unicorn')
     unicorn_binaries = collect_dynamic_libs('unicorn')
     unicorn_datas = collect_data_files('unicorn', include_py_files=False)
 except Exception:
+    unicorn_modules = []
     unicorn_binaries = []
     unicorn_datas = []
+
+hiddenimports += unicorn_modules
 
 
 a = Analysis(
