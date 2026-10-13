@@ -5260,7 +5260,7 @@ def _frozen_smoke_test(report_path):
         "qt_widgets_loaded": True,
         "automatic_proxy_detection_completed": bool(auto_routes) and isinstance(automatic_proxy, str),
         "fresh_session_not_logged_in": info_rc == 1 and "keyring" in info_out.lower(),
-        "status_text_fits": settings.status_card.height() >= settings.status_card.sizeHint().height(),
+        "status_text_fits": settings.status_card.height() >= settings.status_card.heightForWidth(settings.status_card.width()),
         "uses_independent_python_sap": False,
     }
     report["passed"] = (version_rc == 0 and "2.7.0" in version_out and

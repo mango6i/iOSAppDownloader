@@ -338,7 +338,22 @@ class GuiIntegrationTests(unittest.TestCase):
         self.dialog.status_card.setText(self.gui.tr("twofa_status_html"))
         self.dialog.show()
         self.app.processEvents()
-        self.assertGreaterEqual(self.dialog.status_card.height(), self.dialog.status_card.sizeHint().height())
+        # QLabel.sizeHint() uses a preferred width, not the width supplied by
+        # the scroll area. Font fallback on CI can make that hint much taller.
+        self.assertGreaterEqual(self.dialog.status_card.height(),
+                                self.dialog.status_card.heightForWidth(self.dialog.status_card.width()))
+
+    def test_long_status_text_is_fully_reachable_by_scrolling(self):
+        self.dialog.twofa_row_widget.setVisible(True)
+        self.dialog.status_card.setText("Long authentication failure. " * 300)
+        self.dialog.show()
+        self.app.processEvents()
+        label = self.dialog.status_card
+        scroll = self.dialog.status_scroll
+        self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        self.assertGreaterEqual(scroll.verticalScrollBar().maximum(),
+                                label.height() - scroll.viewport().height())
         self.assertLessEqual(self.dialog.twofa_row_widget.geometry().bottom(), self.dialog.height())
         self.dialog.hide()
 

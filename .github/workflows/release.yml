@@ -60,9 +60,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python prepare_engine.py
+          python prepare_engine.py 2>&1 | Tee-Object -FilePath build.log -Append
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest test_engine_adapter -v
+          python -m unittest test_engine_adapter -v 2>&1 | Tee-Object -FilePath build.log -Append
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build executable
