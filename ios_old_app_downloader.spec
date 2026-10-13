@@ -1,48 +1,84 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 import os
+import re
 
 # PyInstaller executes a spec in a namespace where __file__ is not guaranteed.
 # SPECPATH is provided by PyInstaller and keeps the build portable.
 ROOT = Path(SPECPATH) if 'SPECPATH' in globals() else Path.cwd()
 WINDOWS_DIR = Path(os.environ.get('WINDIR', 'C:/Windows'))
-hiddenimports = ['PyQt6.sip', 'winpty', 'winpty.ptyprocess', 'winpty._winpty']
-version_file = str(ROOT / 'version_info.txt')
+hiddenimports = ['PyQt6.sip']
 
-# unicorn 是 C 扩展包，PyInstaller 无法静态分析其结构：
-#   1) 原生库 unicorn/lib/unicorn.dll 不会被自动收集，缺失时报
-#      "Failed to load the Unicorn dynamic library"；
-#   2) 架构常量模块（如 x86_const，位于 unicorn/unicorn_py3/arch/intel.py）
-#      由包内动态导入，缺失时报
-#      "No module named 'unicorn.unicorn_py3.arch.intel'"。
-# 因此这里必须同时收集：全部子模块 + 原生库 + 随包数据。
+# Keep one version source of truth.  The application version controls the EXE
+# name and Windows metadata, so future releases do not require three separate
+# manual edits.
+source_text = (ROOT / 'ios_old_app_downloader.py').read_text(encoding='utf-8')
+version_match = re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']', source_text, re.MULTILINE)
+if not version_match:
+    raise RuntimeError('APP_VERSION was not found in ios_old_app_downloader.py')
+APP_VERSION = version_match.group(1)
 try:
-    from PyInstaller.utils.hooks import (
-        collect_submodules, collect_dynamic_libs, collect_data_files)
-    unicorn_modules = collect_submodules('unicorn')
-    unicorn_binaries = collect_dynamic_libs('unicorn')
-    unicorn_datas = collect_data_files('unicorn', include_py_files=False)
-except Exception:
-    unicorn_modules = []
-    unicorn_binaries = []
-    unicorn_datas = []
+    version_parts = [int(part) for part in APP_VERSION.split('.')]
+except ValueError as exc:
+    raise RuntimeError('APP_VERSION must contain numeric dot-separated parts') from exc
+VERSION_TUPLE = tuple((version_parts + [0, 0, 0, 0])[:4])
+FILE_VERSION = '.'.join(str(part) for part in VERSION_TUPLE)
 
-hiddenimports += unicorn_modules
+generated_dir = ROOT / 'build' / '_generated'
+generated_dir.mkdir(parents=True, exist_ok=True)
+version_file = generated_dir / 'version_info.txt'
+version_file.write_text(f'''# UTF-8
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={VERSION_TUPLE},
+    prodvers={VERSION_TUPLE},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [StringTable(
+        '080404B0',
+        [StringStruct('CompanyName', '果果'),
+         StringStruct('FileDescription', 'iOS 旧版应用下载工具'),
+         StringStruct('FileVersion', '{FILE_VERSION}'),
+         StringStruct('InternalName', 'iOSAppDownloader'),
+         StringStruct('LegalCopyright', 'Copyright (C) 2026 果果'),
+         StringStruct('OriginalFilename', 'iOSAppDownloader_v{APP_VERSION}.exe'),
+         StringStruct('ProductName', 'iOS App Downloader'),
+         StringStruct('ProductVersion', '{FILE_VERSION}')]
+      )]
+    ),
+    VarFileInfo([VarStruct('Translation', [0x0804, 1200])])
+  ]
+)
+''', encoding='utf-8')
+
+datas = [
+    (str(ROOT / 'appstore.ico'), '.'),
+    # Keep the official executable byte-for-byte intact (including its hash).
+    (str(ROOT / 'ipatool' / 'majd' / 'ipatool.exe'), 'ipatool/majd'),
+    (str(ROOT / 'ipatool' / 'majd' / 'LICENSE'), 'licenses/ipatool'),
+    (str(ROOT / 'ipatool' / 'majd' / 'README.md'), 'licenses/ipatool'),
+]
+# Do not redistribute Apple's proprietary SAP assets or a separately licensed
+# Unicorn DLL in the EXE. The official engine obtains/verifies its own runtime
+# into the non-secret cache on first use. A developer's local seed stays local.
 
 
 a = Analysis(
     [str(ROOT / 'ios_old_app_downloader.py')],
     pathex=[str(ROOT)],
     binaries=[
+        # Qt6Core dynamically imports the Windows ICU shim on this target.
+        # Keep it in the PyInstaller root for Qt, while ipatool remains isolated.
         (str(WINDOWS_DIR / 'System32' / 'icuuc.dll'), '.'),
-    ] + unicorn_binaries,
-    datas=[
-        (str(ROOT / 'appstore.ico'), '.'),
-        (str(ROOT / 'ipatool' / 'engine_seed'), 'engine_seed'),
-        (str(ROOT / 'ipatool' / 'kosthi' / 'LICENSE'), 'licenses/ipatool-rs'),
-        (str(ROOT / 'ipatool' / 'kosthi' / 'README.md'), 'licenses/ipatool-rs'),
-        (str(ROOT / 'ipatool' / 'kosthi' / 'CHANGELOG.md'), 'licenses/ipatool-rs'),
-    ] + unicorn_datas,
+    ],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -64,7 +100,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='iOSAppDownloader_v1.0.7',
+    name=f'iOSAppDownloader_v{APP_VERSION}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -78,5 +114,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(ROOT / 'appstore.ico'),
-    version=version_file,
+    version=str(version_file),
 )

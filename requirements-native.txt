@@ -1,3 +1,0 @@
-# SAP runtime dependencies (native Apple CoreFP emulation).
-# Install these to enable the local SAP signer used for Apple ID sign-in.
-unicorn>=2.1.4

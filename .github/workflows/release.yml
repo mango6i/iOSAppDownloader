@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - ios_old_app_downloader.py
+      - engine_adapter.py
+      - prepare_engine.py
+      - test_engine_adapter.py
       - ios_old_app_downloader.spec
       - requirements.txt
       - appstore.ico
@@ -16,6 +19,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-release:
@@ -48,6 +55,16 @@ jobs:
           }
           "APP_VERSION=$($Matches[1])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Check engine integration
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python prepare_engine.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest test_engine_adapter -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build executable
         shell: pwsh
         run: |
@@ -58,6 +75,18 @@ jobs:
             "Expected executable was not created: $expected" | Tee-Object -FilePath build.log -Append
             exit 1
           }
+
+      - name: Validate packaged executable
+        shell: pwsh
+        run: |
+          $report = Join-Path $PWD "build/release-check.json"
+          $exe = Join-Path $PWD "dist/iOSAppDownloader_v$env:APP_VERSION.exe"
+          $process = Start-Process -FilePath $exe -ArgumentList @("--self-test", $report) -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(45000)) { Stop-Process -Id $process.Id; throw "Packaged validation timed out" }
+          if ($process.ExitCode -ne 0) { throw "Packaged validation exited with code $($process.ExitCode)" }
+          if (-not (Test-Path -LiteralPath $report)) { throw "Packaged validation report missing" }
+          $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if (-not $result.passed -or -not $result.automatic_proxy_detection_completed) { throw "Packaged validation failed" }
 
       - name: Preserve failure details
         if: failure()
@@ -90,6 +119,9 @@ jobs:
 
           gh release view $tag --repo "${{ github.repository }}" *> $null
           if ($LASTEXITCODE -eq 0) {
+            # Updating the same version must also update its source archives.
+            gh api --method PATCH "repos/${{ github.repository }}/git/refs/tags/$tag" -f "sha=$env:GITHUB_SHA" -F force=true
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             gh release edit $tag --repo "${{ github.repository }}" --title "iOSAppDownloader $tag" --notes-file $notes --latest
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             gh release upload $tag $asset --repo "${{ github.repository }}" --clobber

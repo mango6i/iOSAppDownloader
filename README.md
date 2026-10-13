@@ -15,7 +15,7 @@
 
 ## 功能
 
-- Apple ID 登录，支持双重认证验证码
+- Apple ID 邮箱 / 手机号登录，支持双重认证验证码（内置官方 ipatool v2.7.0）
 - 登录自动尝试系统代理、本机代理端口和直连，不要求手动切换节点
 - 账号会话只在本次运行期间有效，注销、退出或下次启动都会清理
 - 历史版本支持“官方版本列表”和“免登录查询”两种方式
@@ -64,7 +64,8 @@
 - `ios_old_app_downloader.py`：主程序源码
 - `ios_old_app_downloader.spec`、`appstore.ico`：打包配置与图标；版本号和 EXE 文件属性会从主程序自动生成
 - `requirements.txt`：Python 构建依赖
-- `ipatool/`：运行所需的 ipatool-rs 组件
+- `engine_adapter.py`：官方引擎的接口适配、独立会话与进程取消
+- `ipatool/majd/`：官方 ipatool v2.7.0 许可与校验说明；构建前由 `prepare_engine.py` 从官方准备组件，EXE 成品已内置
 - `docs/releases/`：按版本归档的发布说明
 
 普通用户直接从 Releases 下载最新版 EXE；开发者可以查看源码并按自己的环境重新打包。
@@ -75,4 +76,10 @@
 
 ## 接口来源
 
-本软件的 Apple ID 登录、版本列表和 IPA 下载能力使用开源项目 **ipatool** 的接口能力；本成品内置的 Windows 运行组件来自 [Kosthi/ipatool-rs](https://github.com/Kosthi/ipatool-rs)。
+本软件的 Apple ID 登录、版本列表和 IPA 下载能力使用 [majd/ipatool v2.7.0](https://github.com/majd/ipatool/releases/tag/v2.7.0) 官方 Windows 组件，已替换原来的 Kosthi/ipatool-rs。没有浏览器登录，也不使用第三方签名服务器或之前弃用的独立 Python 认证方案。
+
+本次修订仍为 **v1.0.7**。接入新版认证与重定向处理、手机号账号、官方版本列表和版本号补全、指定历史版本下载；暂不开放 macOS/tvOS/watchOS/visionOS 或 MCP 服务。
+
+每次运行使用独立账号目录与随机加密口令，退出后删除账号凭据及 Cookie；非敏感运行组件缓存单独保留。Apple 是否要求双重认证、是否向手机推送由 Apple 决定，软件不能强制其每次发通知。首次认证如缺少运行组件，官方引擎会自动下载并校验，可能耗时较长。
+
+源码运行 / 构建：先 `pip install -r requirements.txt`，再 `python prepare_engine.py`（校验官方压缩包及组件 SHA-256；已有正确组件则不重复下载）。开发验证：`python -m unittest test_engine_adapter -v`；打包：`pyinstaller --clean --noconfirm ios_old_app_downloader.spec`。成品支持离线检查：`iOSAppDownloader_v1.0.7.exe --self-test 检查报告.json`，不使用账号、不发起登录或购买。

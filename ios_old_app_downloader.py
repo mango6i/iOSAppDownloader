@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-iOS Old App Downloader v1.0.7
+iOS Old App Downloader v2.0
 
 Tabs:
   1. Search   - iTunes Search API
@@ -15,6 +15,9 @@ import zipfile, plistlib, urllib.parse, urllib.request, urllib.error, uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from ctypes import windll
+from engine_adapter import (ENGINE_VERSION, EngineSession, auth_result as _engine_auth_result,
+                            json_records as _engine_json_records, version_rows as _engine_version_rows,
+                            redact_output as _engine_redact_output)
 
 _QT_DLL_HANDLES = []
 _QT_PRELOAD_HANDLES = []
@@ -61,7 +64,7 @@ except Exception as _e:
                     "当前缺少 PyQt6 依赖。\n\n"
                     "你运行的是源码文件，请先安装依赖：\npip install PyQt6\n\n"
                     "如果你想要无需安装的版本，请使用打包好的 "
-                    "iOSAppDownloader_v1.0.7.exe。\n\n原始错误：%s" % _e)
+                    "iOSAppDownloader_v1.0.5.exe。\n\n原始错误：%s" % _e)
     sys.exit(1)
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -73,18 +76,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QStackedWidget, QTabBar, QSizePolicy, QSpacerItem, QFileDialog)
 from PyQt6.QtGui import (QColor, QLinearGradient, QRadialGradient, QConicalGradient,
                          QBrush, QPainter, QPainterPath, QFont, QIcon, QPixmap,
-                         QAction, QPen, QImage, QDesktopServices, QFontMetrics)
+                         QAction, QPen, QImage, QDesktopServices)
 from PyQt6.QtCore import (Qt, QPoint, QPointF, QRect, QTimer, pyqtSignal, QObject, QThread,
                          QUrl, QSize, QStandardPaths, QLocale)
-
-from native_client.auth import AppleAuthenticator, LoginChallenge
-from native_client.bag import fetch_bag
-from native_client.errors import LoginIncomplete, NativeClientError
-from native_client.models import AppleAccount, BagConfig
-from native_client.runtime import SapGuest
-from native_client.sap import SapSession
-from native_client.store import AppleStoreClient
-from native_client.transport import AppleTransport
 
 # ─────────────────────────────────────────────
 # ─────────────────────────────────────────────
@@ -99,14 +93,14 @@ else:
     _MEIPASS = None
 
 _LOCAL_DATA_ROOT = os.environ.get("LOCALAPPDATA") or os.path.join(APP_DIR, "data")
-IPATOOL_SESSION_HOME = os.path.join(
-    _LOCAL_DATA_ROOT, "iOSOldAppDownloader", "ipatool-rs-home")
 IPATOOL_SEED_ROOT = (os.path.join(_MEIPASS, "engine_seed") if _MEIPASS else
                      os.path.join(APP_DIR, "ipatool", "engine_seed"))
+_ENGINE_SESSION = EngineSession(os.path.join(_LOCAL_DATA_ROOT, "iOSOldAppDownloader"),
+                                IPATOOL_SEED_ROOT, _MEIPASS or "")
+IPATOOL_SESSION_HOME = str(_ENGINE_SESSION.home)
 IPATOOL_PROCESS_LOCK = threading.Lock()
 _LOGIN_CHALLENGE_PROXY = None
 _LOGIN_CHALLENGE_PROXY_LOCK = threading.Lock()
-_ENGINE_HOME_LOCK = threading.Lock()
 _ACTIVE_TOOL_WORKERS = set()
 _DIAGNOSTIC_LOCK = threading.Lock()
 _DIAGNOSTIC_PATH = os.path.join(
@@ -114,13 +108,6 @@ _DIAGNOSTIC_PATH = os.path.join(
 _ICON_CACHE = {}
 _ICON_CACHE_LOCK = threading.Lock()
 _ICON_CACHE_LIMIT = 256
-
-# The independent client keeps the authenticated Apple session only in memory.
-# It is deliberately not serialized to the settings file or the filesystem.
-_NATIVE_SESSION = None
-_NATIVE_ACCOUNT = None
-_NATIVE_STORE = None
-_NATIVE_SESSION_LOCK = threading.RLock()
 
 
 def _diagnostic(event, detail=""):
@@ -158,11 +145,12 @@ def find_ipatool():
     """"""
     cands = []
     if _MEIPASS:
-        cands.append(os.path.join(_MEIPASS, "ipatool.exe"))
+        # Do not silently fall back to a stale or experimental engine.
+        cands += [
+            os.path.join(_MEIPASS, "ipatool", "majd", "ipatool.exe"),
+        ]
     cands += [
-        os.path.join(APP_DIR, "ipatool", "kosthi", "ipatool.exe"),
-        os.path.join(APP_DIR, "kosthi", "ipatool.exe"),
-        os.path.join(APP_DIR, "ipatool.exe"),
+        os.path.join(APP_DIR, "ipatool", "majd", "ipatool.exe"),
     ]
     for c in cands:
         if os.path.exists(c):
@@ -184,7 +172,6 @@ os.makedirs(IPAS_DIR, exist_ok=True)
 PROXY_MODE = "auto"
 PROXY_CUSTOM = ""
 
-KEYCHAIN_PASSPHRASE = "iOSOldAppDownloader2026"
 
 
 def _ht(text):
@@ -226,7 +213,7 @@ TRANSLATIONS = {
         "password_label": "密码:",
         "backend_label": "登录后端:",
         "code_label": "验证码:",
-        "email_placeholder": "你的 Apple ID 邮箱",
+        "email_placeholder": "你的 Apple ID 邮箱或手机号",
         "password_placeholder": "Apple ID 密码",
         "code_placeholder": "6 位验证码",
         "submit_code": "提交验证码",
@@ -239,7 +226,7 @@ TRANSLATIONS = {
         "change": "更改",
         "proxy": "代理:",
         "proxy_auto": "跟随系统",
-        "proxy_direct": "直连（ipatool-rs）",
+        "proxy_direct": "直连（ipatool）",
         "proxy_custom": "自定义",
         "custom_proxy_placeholder": "自定义代理地址，如 http://127.0.0.1:7890",
         "network_diag": "网络诊断:",
@@ -248,7 +235,7 @@ TRANSLATIONS = {
         "diag_hint": "检测当前网络能否通过 Apple 登录认证",
         "done": "完成",
         "language": "界面语言:",
-        "software_version": "软件版本：v%s" % APP_VERSION,
+        "software_version": "软件版本：v%s · ipatool v%s" % (APP_VERSION, ENGINE_VERSION),
         "language_auto": "跟随系统（自动）",
         "language_zh": "简体中文",
         "language_en": "English",
@@ -295,13 +282,13 @@ TRANSLATIONS = {
         "actions": "操作",
         "account_prefix": "当前账号：",
         "fill_email_title": "提示",
-        "fill_email_message": "请填写 Apple ID 邮箱。",
+        "fill_email_message": "请填写 Apple ID 邮箱或手机号。",
         "fill_password_message": "请填写 Apple ID 密码。",
         "component_error_title": "软件组件异常",
         "component_error_message": "登录组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
         "login_reading": "正在读取登录状态...",
         "login_code_status": "正在验证双重认证码...<br>请稍候。",
-        "login_start_status": "正在登录...<br>正在连接 Apple 服务器，请稍候。",
+        "login_start_status": "正在准备安全认证并连接 Apple...<br>首次初始化可能较慢，请勿重复点击。关闭设置可取消。",
         "need_2fa_title": "需要双重认证",
         "need_2fa_message": "Apple 正在尝试向你的受信任设备发送验证码。\n如果手机没有弹出通知，请在手机上手动获取 6 位验证码，然后点“提交验证码”。",
         "twofa_status_html": "<p style='margin:0 0 4px 0'><b>🔐 需要双重认证</b></p><p style='margin:0'>请查看受信任设备上的 Apple 通知；若没有弹出，请在手机上手动获取 6 位验证码，再在下方输入。</p>",
@@ -418,7 +405,7 @@ TRANSLATIONS = {
         "password_label": "Password:",
         "backend_label": "Sign-in engine:",
         "code_label": "Verification code:",
-        "email_placeholder": "Your Apple ID email",
+        "email_placeholder": "Your Apple ID email or phone number",
         "password_placeholder": "Apple ID password",
         "code_placeholder": "6-digit code",
         "submit_code": "Submit code",
@@ -431,7 +418,7 @@ TRANSLATIONS = {
         "change": "Change",
         "proxy": "Proxy:",
         "proxy_auto": "Use system setting",
-        "proxy_direct": "Direct (ipatool-rs)",
+        "proxy_direct": "Direct (ipatool)",
         "proxy_custom": "Custom",
         "custom_proxy_placeholder": "Custom proxy, e.g. http://127.0.0.1:7890",
         "network_diag": "Network check:",
@@ -440,7 +427,7 @@ TRANSLATIONS = {
         "diag_hint": "Check whether this network can reach Apple sign-in services",
         "done": "Done",
         "language": "Language:",
-        "software_version": "Version: v%s" % APP_VERSION,
+        "software_version": "Version: v%s · ipatool v%s" % (APP_VERSION, ENGINE_VERSION),
         "language_auto": "Follow system (Auto)",
         "language_zh": "简体中文",
         "language_en": "English",
@@ -487,13 +474,13 @@ TRANSLATIONS = {
         "actions": "Actions",
         "account_prefix": "Account: ",
         "fill_email_title": "Notice",
-        "fill_email_message": "Please enter your Apple ID email.",
+        "fill_email_message": "Please enter your Apple ID email or phone number.",
         "fill_password_message": "Please enter your Apple ID password.",
         "component_error_title": "Component error",
         "component_error_message": "The sign-in component is missing or incomplete.\nPlease download the complete package again.",
         "login_reading": "Reading sign-in status...",
         "login_code_status": "Verifying the two-factor code...<br>Please wait.",
-        "login_start_status": "Signing in...<br>Connecting to Apple services. Please wait.",
+        "login_start_status": "Preparing secure authentication and connecting to Apple...<br>First-time setup may take longer. Close settings to cancel.",
         "need_2fa_title": "Two-factor authentication required",
         "need_2fa_message": "Apple is trying to send a code to your trusted device.\nIf no notification appears, manually get a 6-digit code on your phone, then click Submit code.",
         "twofa_status_html": "<p style='margin:0 0 4px 0'><b>🔐 Two-factor authentication required</b></p><p style='margin:0'>Check your trusted Apple device; if no notification appears, manually get a 6-digit code and enter it below.</p>",
@@ -693,7 +680,7 @@ COUNTRY_SAVE = "cn"
 
 LOGIN_MODE = "ipatool"
 LOGIN_MODES = (
-    ("ipatool", "官方 Kosthi/ipatool-rs v0.1.8"),
+    ("ipatool", "官方 majd/ipatool v" + ENGINE_VERSION),
 )
 
 # ─────────────────────────────────────────────
@@ -939,17 +926,13 @@ class MacStyleMessageBox(QDialog):
     """"""
     MAX_HEIGHT = 620
     MAX_WIDTH = 520
-    MAX_WIDTH_INNER = MAX_WIDTH - 24 * 2
 
     def __init__(self, parent=None, title="提示", message="", icon_type="info", buttons=None,
                  rich_message=False):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        # 高度不再按行数粗略估算，改为在 _setup_ui 中依据真实文本度量计算，
-        # 否则长文案会被裁切或被底部按钮覆盖。
         self.setFixedWidth(self.MAX_WIDTH)
-        self.setMaximumHeight(self.MAX_HEIGHT)
         self._dragging = False
         self._drag_start = QPoint()
         self.title = title
@@ -982,12 +965,13 @@ class MacStyleMessageBox(QDialog):
             msg.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
         else:
             msg.setTextFormat(Qt.TextFormat.PlainText)
-        text_height, total_height = self._measure_message(msg)
-        # 锁定文本自身高度，避免竖向空间不足时 QLabel 被压缩后与按钮重叠。
+        # Preserve the upstream repository's long-message layout fix, using
+        # QLabel's own rich/plain-text measurement at the actual inner width.
+        text_height = max(26, msg.heightForWidth(self.MAX_WIDTH - 48))
         msg.setMinimumHeight(text_height)
+        total_height = max(240, text_height + 160)
         self._scroll_host = None
         if total_height > self.MAX_HEIGHT:
-            # 文案超出上限时改为可滚动区域，保证内容完整可读。
             holder = QScrollArea()
             holder.setWidgetResizable(True)
             holder.setFrameShape(QFrame.Shape.NoFrame)
@@ -1020,27 +1004,6 @@ class MacStyleMessageBox(QDialog):
         layout.addLayout(btn_layout)
         self.setFixedHeight(min(self.MAX_HEIGHT, total_height))
         center_window(self)
-
-    def _measure_message(self, msg):
-        """按 13px 字体与固定内宽计算文本真实高度及窗口所需总高。
-
-        返回 (文本高度, 窗口总高度)。使用 QFontMetrics 而非按行数估算，
-        因为中文长句在 520px 宽度下会折行，行数与 \\n 数量无关。
-        """
-        inner_width = self.MAX_WIDTH_INNER
-        font = msg.font()
-        font.setPixelSize(13)
-        metrics = QFontMetrics(font)
-        flags = int(Qt.TextFlag.TextWordWrap) | int(Qt.TextFlag.TextExpandTabs)
-        plain = re.sub(r"<br\s*/?>", "\n", self.message or "", flags=re.IGNORECASE)
-        if self.rich_message:
-            plain = re.sub(r"<[^>]+>", "", plain)
-        rect = metrics.boundingRect(QRect(0, 0, inner_width, 100000), flags, plain)
-        line_h = max(metrics.height(), 18)
-        text_height = max(rect.height(), line_h)
-        # 窗口总高 = 上下边距 + 标题行 + 文本 + 按钮行 + 布局间距 + 文本内边距
-        chrome = 20 + 20 + 40 + 34 + 12 * 3 + 8
-        return text_height + 8, text_height + chrome
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1125,7 +1088,8 @@ class SettingsDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         # The 2FA status card and code row are shown dynamically. Keep enough
         # vertical room for the rich text so it cannot be clipped.
-        self.setFixedSize(580, 558)
+        self.setMinimumSize(580, 600)
+        self.resize(580, 600)
         self._dragging = False
         self._drag_start = QPoint()
         self._threads = []
@@ -1133,7 +1097,7 @@ class SettingsDialog(QDialog):
         self._logout_busy = False
         self._closing = False
         self._pending_pwd = ""
-        self._interactive_login_worker = None
+        self._pending_email = ""
         self._login_phase = "idle"
         self._i18n_widgets = []
         self._i18n_placeholders = []
@@ -1211,6 +1175,8 @@ class SettingsDialog(QDialog):
         _ACTIVE_TOOL_WORKERS.add(w)
 
         def _slot(rc, out):
+            if self._closing:
+                return
             try:
                 callback(rc, out)
             except Exception as exc:
@@ -1265,15 +1231,13 @@ class SettingsDialog(QDialog):
 
         self.status_card = QLabel()
         self.status_card.setWordWrap(True)
-        self.status_card.setMinimumHeight(92)
+        self.status_card.setMinimumHeight(110)
         self.status_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self.status_card.setStyleSheet(
             "QLabel{font-size:14px;color:#222;background:rgba(255,255,255,85);"
             "border:1px solid rgba(0,122,255,90);border-radius:12px;"
             "padding:14px 16px;}")
         self.status_card.setTextFormat(Qt.TextFormat.RichText)
-        # 状态卡片文案可能很长（例如 HTTP 204 凭据提示），固定尺寸的面板放不下，
-        # 直接进入布局会被压缩导致文字截断。改为放进滚动区，超出部分可滚动查看。
         self.status_scroll = QScrollArea()
         self.status_scroll.setWidgetResizable(True)
         self.status_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -1282,7 +1246,7 @@ class SettingsDialog(QDialog):
             "QScrollArea{background:transparent;border:none;}"
             "QScrollArea > QWidget > QWidget{background:transparent;}")
         self.status_scroll.setWidget(self.status_card)
-        self.status_scroll.setMinimumHeight(92)
+        self.status_scroll.setMinimumHeight(110)
         self.status_scroll.setMaximumHeight(200)
         root.addWidget(self.status_scroll)
 
@@ -1310,8 +1274,7 @@ class SettingsDialog(QDialog):
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
         mode_row.addWidget(self._field_label("backend_label"))
-        mode_label = QLabel(localized("官方 Kosthi/ipatool-rs v0.1.8",
-                                     "Official Kosthi/ipatool-rs v0.1.8"))
+        mode_label = QLabel(localized("官方 majd/ipatool v", "Official majd/ipatool v") + ENGINE_VERSION)
         mode_label.setStyleSheet(
             "QLabel{font-size:13px;color:#333;background:rgba(255,255,255,70);"
             "border-radius:8px;padding:8px 12px;}")
@@ -1487,11 +1450,7 @@ class SettingsDialog(QDialog):
         if self._login_phase != "idle":
             return
         self.status_card.setText(tr("status_loading"))
-        _session, account, _store = _native_snapshot()
-        if account is not None:
-            self._on_status_done(0, _native_auth_record(account))
-        else:
-            self._on_status_done(1, "")
+        self._run_tool_async(["auth", "info", "--format", "json"], self._on_status_done, timeout=45)
 
     def _on_status_done(self, rc, out):
         if self._login_phase != "idle":
@@ -1503,16 +1462,18 @@ class SettingsDialog(QDialog):
             self.status_card.setText(tr("status_logged_out"))
 
     def _do_login(self):
+        if self._login_busy or self._closing:
+            return
         global APPLE_ID_SAVE
         email = self.email_edit.text().strip()
-        pwd = self.pwd_edit.text().strip()
+        pwd = self.pwd_edit.text()
         if not email:
             MacStyleMessageBox(self, title=tr("fill_email_title"), message=tr("fill_email_message"), icon_type="warning").exec()
             return
         if not pwd:
             MacStyleMessageBox(self, title=tr("fill_email_title"), message=tr("fill_password_message"), icon_type="warning").exec()
             return
-        if not os.path.isfile(os.path.join(_native_asset_dir(), "CoreFP")):
+        if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
             MacStyleMessageBox(self, title=tr("component_error_title"),
                                message=tr("component_error_message"),
                                icon_type="warning").exec()
@@ -1522,87 +1483,120 @@ class SettingsDialog(QDialog):
         self._pending_pwd = pwd
         self._run_login(email, pwd)
 
-    def _run_login(self, email, pwd):
+    def _run_login(self, email, pwd, code=""):
         if getattr(self, "_login_busy", False):
             return
-        # A new login always creates a fresh challenge. The native worker
-        # keeps the password request and code request inside one in-memory
-        # Apple transport and one SAP signer.
-        _clear_login_challenge_proxy()
+        if not code:
+            # Clear the old local state in run_tool before the password request.
+            # Apple, not this client, decides whether a new 2FA challenge follows.
+            _clear_login_challenge_proxy()
+            self._pending_email = email
         self._login_busy = True
-        self._login_phase = "verifying_password"
+        self._login_phase = "verifying_code" if code else "verifying_password"
         self.login_btn.setEnabled(False)
         self.login_btn.setText(tr("logging_in"))
         self.logout_btn.setEnabled(False)
         self.twofa_btn.setEnabled(False)
-        self.twofa_row_widget.setVisible(False)
-        self.status_card.setText(tr("login_start_status"))
-        _diagnostic("login_request", "mode=native_sap same_transport=true")
-        self._run_interactive_login(email, pwd)
+        if not code:
+            self.twofa_row_widget.setVisible(False)
+        self.status_card.setText(tr("login_code_status") if code else tr("login_start_status"))
+        args = ["auth", "login", "--email", email, "--password", pwd,
+                "--non-interactive", "--format", "json"]
+        if code:
+            args += ["--auth-code", code]
+        # A 2FA challenge can be tied to the route that created it. Force the
+        # verification request through that exact route instead of probing a
+        # different proxy and invalidating the freshly generated code.
+        proxy = _get_login_challenge_proxy() if code else None
+        _diagnostic("login_request", "with_2fa=%s mode=non_interactive" % bool(code))
+        self._run_tool_async(
+            args, lambda rc, out: self._on_login_done(rc, out, bool(code)),
+            timeout=90 if code else 180, proxy=proxy)
 
-    def _run_interactive_login(self, email, pwd):
-        worker = NativeLoginWorker(email, pwd, timeout=180)
-        self._interactive_login_worker = worker
-        self._threads.append(worker)
-        _ACTIVE_TOOL_WORKERS.add(worker)
-
-        def _slot(rc, out):
-            try:
-                self._on_interactive_login_done(rc, out)
-            except Exception as exc:
-                _diagnostic("interactive_login_callback_exception", repr(exc))
-                self._login_busy = False
-                self._login_phase = "idle"
-                self.login_btn.setEnabled(True)
-                self.login_btn.setText(tr("login"))
-                self.logout_btn.setEnabled(True)
-                self.twofa_btn.setEnabled(True)
-                self.status_card.setText(localized(
-                    "登录处理发生异常，已阻止程序退出。<br>%s",
-                    "Sign-in error; the app remained open.<br>%s") % _ht(exc))
-
-        def _finished():
-            if worker in self._threads:
-                self._threads.remove(worker)
-            _ACTIVE_TOOL_WORKERS.discard(worker)
-            if self._interactive_login_worker is worker:
-                self._interactive_login_worker = None
-            worker.deleteLater()
-
-        worker.twofa_requested.connect(self._on_interactive_2fa_requested)
-        worker.done.connect(_slot)
-        worker.finished.connect(_finished)
-        worker.start()
-
-    def _on_interactive_2fa_requested(self):
-        if self._closing:
-            return
-        self._login_phase = "waiting_code"
-        self.twofa_row_widget.setVisible(True)
-        self.twofa_edit.clear()
-        self.twofa_edit.setFocus()
-        self.twofa_btn.setEnabled(True)
-        self.status_card.setText(tr("twofa_status_html"))
-        QApplication.beep()
-
-    def _on_interactive_login_done(self, rc, out):
-        _diagnostic("interactive_login_response", "rc=%s output_length=%s" %
-                    (rc, len(out or "")))
+    def _on_login_done(self, rc, out, had_code):
+        _diagnostic("login_response", "rc=%s with_2fa=%s output_length=%s" %
+                    (rc, bool(had_code), len(out or "")))
         if self._closing or rc == -4:
             self._login_busy = False
             self._login_phase = "idle"
             return
-
         self._login_busy = False
         self.login_btn.setEnabled(True)
         self.login_btn.setText(tr("login"))
         self.logout_btn.setEnabled(True)
         self.twofa_btn.setEnabled(True)
-        authenticated, needs_code, who = _auth_result(rc, out)
+        authenticated, needs_code, _ = _auth_result(rc, out)
         if authenticated:
+            self._begin_login_confirmation(had_code, out)
+            return
+        if needs_code:
+            self._login_phase = "waiting_code"
+            self.twofa_row_widget.setVisible(True)
+            self.twofa_edit.clear()
+            self.twofa_edit.setFocus()
+            self.status_card.setText(localized(
+                "Apple 尚未完成验证，请使用设备上最新的 6 位验证码。",
+                "Apple did not complete verification. Use a fresh 6-digit code.")
+                if had_code else tr("twofa_status_html"))
+            MacStyleMessageBox(self, title=tr("need_2fa_title"),
+                               message=localized(
+                                   "Apple 尚未完成这次验证。请使用最新验证码，只提交一次。",
+                                   "Apple did not complete verification. Submit a fresh code once.")
+                               if had_code else tr("need_2fa_message"),
+                               icon_type="info").exec()
+            return
+        # A transport/signature/setup failure is not evidence of a wrong code.
+        self._login_phase = "waiting_code" if had_code else "idle"
+        self.twofa_row_widget.setVisible(bool(had_code))
+        if rc == -1:
+            message = tr("component_error_message")
+        elif rc == -2:
+            message = localized(
+                "认证准备或连接超时，已停止本次请求。请检查网络或代理后重试。",
+                "Authentication setup or connection timed out; the request was stopped. Check your network or proxy and retry.")
+        else:
+            message = _friendly_auth_error(out)
+        self.status_card.setText(localized("登录未完成<br>%s", "Sign-in did not complete<br>%s") % _ht(message))
+        MacStyleMessageBox(self, title=localized("登录未完成", "Sign-in did not complete"),
+                           message=message, icon_type="warning").exec()
+
+    def _begin_login_confirmation(self, had_code, auth_out=""):
+        if self._closing:
+            return
+        self._login_busy = True
+        self._login_phase = "confirming"
+        self.login_btn.setEnabled(False)
+        self.login_btn.setText(tr("confirm_login"))
+        self.logout_btn.setEnabled(False)
+        self.twofa_btn.setEnabled(False)
+        self.status_card.setText(localized(
+            "验证码已提交<br>正在确认真实登录状态，请稍候。" if had_code else
+            "认证已通过<br>正在确认账号登录状态，请稍候。",
+            "Code submitted<br>Confirming the actual sign-in status..." if had_code else
+            "Authentication accepted<br>Confirming account status..."))
+        self._run_tool_async(
+            ["auth", "info", "--format", "json"],
+            lambda info_rc, info_out: self._on_login_verified(
+                info_rc, info_out, bool(had_code), auth_out),
+            timeout=45,
+            proxy=_get_login_challenge_proxy())
+
+    def _on_login_verified(self, rc, out, had_code, auth_out=""):
+        _diagnostic("login_status_confirmation", "rc=%s with_2fa=%s output_length=%s" %
+                    (rc, bool(had_code), len(out or "")))
+        if self._closing:
+            self._login_busy = False
             self._login_phase = "idle"
-            self.status_card.setText(tr("status_logged") +
-                                     _ht(who or self.email_edit.text().strip()))
+            return
+        self._login_busy = False
+        self.login_btn.setEnabled(True)
+        self.login_btn.setText(tr("login"))
+        self.logout_btn.setEnabled(True)
+        self.twofa_btn.setEnabled(True)
+        logged, needs_code, who = _auth_result(rc, out)
+        if logged:
+            self._login_phase = "idle"
+            self.status_card.setText(tr("status_logged") + _ht(who or self.email_edit.text().strip()))
             parent = self.parent()
             if parent is not None and hasattr(parent, "_on_login_status"):
                 parent._on_login_status(rc, out)
@@ -1611,29 +1605,54 @@ class SettingsDialog(QDialog):
             self._pending_pwd = ""
             _clear_login_challenge_proxy()
             self.twofa_row_widget.setVisible(False)
-            MacStyleMessageBox(self, title=tr("login_success_title"),
-                               message=tr("login_success_message"),
-                               icon_type="success").exec()
+            confirmation = MacStyleMessageBox(self, title=tr("login_success_title"),
+                                             message=tr("login_success_message"),
+                                             icon_type="success")
+            if confirmation.exec() == QDialog.DialogCode.Accepted:
+                self.accept()
             return
-
-        # A failed code attempt ends the interactive ipatool-rs command. Keep
-        # the password in memory for the next fresh challenge, but do not send
-        # another code to an already-closed process.
-        self._login_phase = "idle"
-        self.twofa_row_widget.setVisible(False)
-        if needs_code:
-            message = localized(
-                "本次验证码会话已结束，请点击“登录 / 重新登录”重新获取最新验证码。",
-                "The verification session ended. Click Sign in again to request a new code.")
-        else:
-            message = _friendly_auth_error(out)
-        self.status_card.setText(localized("登录未完成<br>%s", "Sign-in did not complete<br>%s") %
-                                 _ht(message))
-        MacStyleMessageBox(self, title=localized("登录未完成", "Sign-in did not complete"),
-                           message=message, icon_type="warning").exec()
+        if had_code and needs_code:
+            self._login_phase = "waiting_code"
+            self.login_btn.setEnabled(True)
+            self.login_btn.setText(tr("login"))
+            self.logout_btn.setEnabled(True)
+            self.twofa_btn.setEnabled(True)
+            self.twofa_row_widget.setVisible(True)
+            self.twofa_edit.clear()
+            self.twofa_edit.setFocus()
+            self.status_card.setText(localized(
+                "Apple 仍要求双重认证<br>请在手机上重新生成最新 6 位验证码后再提交。",
+                "Apple still requires two-factor authentication<br>Generate a new 6-digit code on your device before submitting again."))
+            MacStyleMessageBox(
+                self,
+                title=tr("need_2fa_title"),
+                message=localized(
+                    "刚才的验证码没有完成登录会话。请在手机上重新生成一个最新验证码，再提交一次；不要重复点提交或重复使用旧验证码。",
+                    "The previous code did not complete the sign-in session. Generate a new code on your device and submit it once; do not repeatedly submit or reuse the old code."),
+                icon_type="info").exec()
+            return
+        self._login_phase = "waiting_code" if had_code else "idle"
+        self.twofa_row_widget.setVisible(bool(had_code))
+        message = localized(
+            "认证请求已返回，但账号状态确认失败，因此没有判定为登录成功。\n\n%s",
+            "The authentication request returned, but the account status could not be confirmed, so sign-in was not marked successful.\n\n%s") % _friendly_auth_error(out)
+        self.status_card.setText(localized(
+            "认证请求已返回，但账号状态确认失败，因此没有判定为登录成功。<br><br>%s",
+            "The authentication request returned, but the account status could not be confirmed.<br><br>%s") % _ht(_friendly_auth_error(out)))
+        MacStyleMessageBox(self, title=localized("登录未完成", "Sign-in did not complete"), message=message, icon_type="warning").exec()
 
     def _do_login_with_2fa(self):
+        if getattr(self, "_login_busy", False):
+            return
+        if getattr(self, "_login_phase", "") not in ("waiting_code", "idle"):
+            return
         email = self.email_edit.text().strip()
+        if email != self._pending_email:
+            MacStyleMessageBox(self, title=tr("fill_email_title"),
+                               message=localized("账号已更改，请先点击登录，重新发起认证。",
+                                                 "The Apple ID changed. Start sign-in again before submitting a code."),
+                               icon_type="warning").exec()
+            return
         code = _normalize_2fa_code(self.twofa_edit.text())
         if not re.fullmatch(r"[0-9]{6}", code):
             MacStyleMessageBox(self, title=tr("fill_email_title"), message=tr("code_invalid"), icon_type="warning").exec()
@@ -1644,31 +1663,16 @@ class SettingsDialog(QDialog):
             MacStyleMessageBox(self, title=tr("fill_email_title"), message=tr("password_expired"),
                                icon_type="warning").exec()
             return
-        worker = getattr(self, "_interactive_login_worker", None)
-        if worker is not None and worker.isRunning():
-            self._login_phase = "submitting_code"
-            self.twofa_btn.setEnabled(False)
-            self.login_btn.setEnabled(False)
-            self.status_card.setText(localized(
-                "验证码已提交<br>正在使用同一登录会话完成验证，请稍候。",
-                "Code submitted<br>Completing verification in the same sign-in session..."))
-            _diagnostic("login_code_submit", "same_process=true")
-            try:
-                worker.submit_code(code)
-            except Exception as exc:
-                _diagnostic("login_code_submit_exception", repr(exc))
-                self.twofa_btn.setEnabled(True)
-                self.login_btn.setEnabled(True)
-                self._login_phase = "waiting_code"
-            return
-
-        # The previous interactive command has ended (for example after an
-        # invalid/expired code).  Start a new challenge instead of submitting
-        # a code to a dead process.
-        self._run_login(email, pwd)
+        self._run_login(email, pwd, code)
 
     def _do_logout(self):
         if getattr(self, "_logout_busy", False):
+            return
+        if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
+            MacStyleMessageBox(self, title=tr("component_error_title"),
+                               message=localized("注销组件缺失，请重新下载完整的软件。",
+                                                 "The sign-out component is missing. Download the complete package again."),
+                               icon_type="warning").exec()
             return
         self._logout_busy = True
         self._login_phase = "logging_out"
@@ -1676,8 +1680,7 @@ class SettingsDialog(QDialog):
         self.logout_btn.setText(tr("logout_progress"))
         self.login_btn.setEnabled(False)
         self.status_card.setText(localized("正在注销...", "Signing out..."))
-        _clear_native_auth()
-        QTimer.singleShot(0, lambda: self._on_logout_done(0, ""))
+        self._run_tool_async(["auth", "revoke", "--format", "json"], self._on_logout_done, timeout=60)
 
     def _on_logout_done(self, rc, out):
         self._logout_busy = False
@@ -1719,16 +1722,20 @@ class SettingsDialog(QDialog):
 
     def accept(self):
         self._closing = True
-        worker = getattr(self, "_interactive_login_worker", None)
-        if worker is not None and worker.isRunning():
+        for worker in list(self._threads):
             worker.stop()
+        self._pending_pwd = ""
+        self.pwd_edit.clear()
+        self.twofa_edit.clear()
         super().accept()
 
     def reject(self):
         self._closing = True
-        worker = getattr(self, "_interactive_login_worker", None)
-        if worker is not None and worker.isRunning():
+        for worker in list(self._threads):
             worker.stop()
+        self._pending_pwd = ""
+        self.pwd_edit.clear()
+        self.twofa_edit.clear()
         super().reject()
 
     def _change_dir(self):
@@ -1971,6 +1978,11 @@ def api_search_apps(keyword, country="cn", limit=50):
     d = _http_get_json(url, timeout=18)
     out = []
     for r in d.get("results", []):
+        raw_price = r.get("price")
+        try:
+            is_free = raw_price is not None and float(raw_price) == 0
+        except (TypeError, ValueError):
+            is_free = False
         out.append({
             "track_name": r.get("trackName", ""),
             "bundle_id": r.get("bundleId", ""),
@@ -1985,6 +1997,7 @@ def api_search_apps(keyword, country="cn", limit=50):
             "track_view_url": r.get("trackViewUrl", ""),
             "price": r.get("formattedPrice", "") or
                      (tr("free") if not r.get("price") else str(r.get("price"))),
+            "is_free": is_free,
             "genres": ", ".join(r.get("genres", []) or []),
             "description": (r.get("description", "") or "").replace("\n", " ").strip(),
             "release_date": (r.get("currentVersionReleaseDate", "") or "")[:19].replace("T", " "),
@@ -2021,22 +2034,83 @@ def api_fetch_history_local(app_id):
             break
     return out
 
-def api_fetch_history_apple(app_id):
+def _is_empty_song_list_response(output):
+    low = (output or "").lower()
+    return ("empty songlist" in low or "license is required" in low or
+            "license required" in low or "failed to get version identifiers" in low or
+            ("failed to list versions" in low and "unexpected response" in low))
+
+
+def _history_local_fallback_notice():
+    return localized(
+        "Apple 没有返回该账号的官方版本列表，已自动改用“免登录查询”。这些版本 ID 可继续勾选下载；如果下载失败，通常是该 Apple ID 未获取过该应用或商店区域不一致。",
+        "Apple did not return the official version list for this account, so the app automatically used Login-free lookup. These version IDs can still be selected for download; if downloading fails, the Apple ID may not own the app or may use a different storefront.")
+
+
+def _fetch_history_local_fallback(app_id):
+    rows = api_fetch_history_local(app_id)
+    if rows:
+        rows[0]["_notice"] = _history_local_fallback_notice()
+    return rows
+
+
+def _official_version_list_args(app_id, bundle_identifier=""):
+    args = ["list-versions", "--platform", "iphone"]
+    if app_id:
+        args.extend(["--app-id", str(app_id)])
+    bundle_identifier = str(bundle_identifier or "").strip()
+    if bundle_identifier:
+        args.extend(["--bundle-identifier", bundle_identifier])
+    args.extend(["--format", "json", "--non-interactive"])
+    return args
+
+
+def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=False):
     """"""
-    _session, _account, native_store = _native_snapshot()
-    if native_store is None:
-        raise RuntimeError(localized("请先登录 Apple ID，再获取官方版本列表。",
-                                     "Sign in with an Apple ID before loading the official version list."))
-    try:
-        official_ids = native_store.list_versions(app_id)
-    except Exception as exc:
-        raise RuntimeError("官方版本列表获取失败：%s" % exc) from exc
-    rows = [{"version": "", "external_id": str(ext_id), "date": "", "size": 0}
-            for ext_id in official_ids if str(ext_id).strip()]
+    if not IPATOOL_PATH:
+        raise RuntimeError("软件内部查询组件不可用，请重新下载完整的软件")
+    bundle_identifier = str(bundle_identifier or "").strip()
+    version_args = _official_version_list_args(app_id, bundle_identifier)
+    rc, out = run_tool(version_args, timeout=90)
+
+    # Apple only exposes the official song/version list after the signed-in
+    # account has obtained a license for the app.  For a free app that has
+    # never been acquired, ipatool-rs reports ``empty songList``.  Obtain the
+    # free license once, then retry the exact same query.  Never do this for a
+    # paid app and never loop when Apple keeps returning an empty list.
+    if (rc != 0 and _is_empty_song_list_response(out) and bundle_identifier
+            and allow_auto_purchase):
+        _diagnostic("history_license_acquire", "bundle=%s" % bundle_identifier)
+        purchase_args = [
+            "purchase", "--bundle-identifier", bundle_identifier,
+            "--format", "json", "--non-interactive",
+        ]
+        purchase_rc, purchase_out = run_tool(purchase_args, timeout=90)
+        _diagnostic("history_license_result", "rc=%s bundle=%s" % (
+            purchase_rc, bundle_identifier))
+        retry_rc, retry_out = run_tool(version_args, timeout=90)
+        if retry_rc == 0:
+            rc, out = retry_rc, retry_out
+        elif _is_empty_song_list_response(retry_out):
+            return _fetch_history_local_fallback(app_id)
+        else:
+            detail = _friendly_auth_error(retry_out)
+            if purchase_rc != 0:
+                purchase_detail = _friendly_auth_error(purchase_out)
+                if purchase_detail and purchase_detail != detail:
+                    detail = "%s\n%s" % (purchase_detail, detail)
+            raise RuntimeError(localized(
+                "已尝试为该免费应用获取许可，但 Apple 仍未返回官方版本列表。请确认 Apple ID 的商店区域与当前搜索区域一致；也可暂时使用‘免登录查询’。\n%s",
+                "The app tried to obtain the free license, but Apple still did not return an official version list. Make sure the Apple ID storefront matches the selected search region, or use Login-free lookup.\n%s") % detail)
+    if rc != 0:
+        if _is_empty_song_list_response(out):
+            return _fetch_history_local_fallback(app_id)
+        raise RuntimeError(_friendly_auth_error(out) or "历史版本查询失败")
+    rows = _engine_version_rows(out)
     if not rows:
         raise RuntimeError("没有收到有效的历史版本数据")
 
-    # ipatool-rs 的官方 version list 是版本 ID 的权威来源，但 Apple 在该接口里
+    # ipatool 的官方 list-versions 是版本 ID 的权威来源，但 Apple 在该接口里
     # 通常不返回可读版本号、文件大小和日期。用公开版本资料按同一官方 ID 补齐；
     # 即使资料源暂时不可用，也绝不再把版本 ID 冒充为版本号。
     try:
@@ -2058,6 +2132,25 @@ def api_fetch_history_apple(app_id):
         row["version"] = str(meta.get("version") or row.get("version") or "")
         row["date"] = str(meta.get("date") or "")
         row["size"] = meta.get("size") or 0
+    # v2.7 can resolve real display versions from Apple. Limit enrichment to
+    # three recent missing rows and a shared 15-second budget, not all 200+ IDs.
+    deadline = time.monotonic() + 15
+    missing = [row for row in rows if not row["version"]][:3]
+    for row in missing:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        metadata_args = ["get-version-metadata", "--app-id", str(app_id),
+                         "--external-version-id", row["external_id"],
+                         "--platform", "iphone", "--format", "json", "--non-interactive"]
+        meta_rc, meta_out = run_tool(metadata_args, timeout=min(5, remaining))
+        if meta_rc != 0:
+            break
+        for metadata in _json_records(meta_out):
+            if (isinstance(metadata, dict) and metadata.get("success") is True
+                    and str(metadata.get("externalVersionID")) == row["external_id"]):
+                row["version"] = str(metadata.get("displayVersion") or "")
+                row["date"] = str(metadata.get("releaseDate") or "")[:19].replace("T", " ")
     return rows
 
 # ---------------------------------------------------------------- 官网会话凭证
@@ -2195,67 +2288,6 @@ def _machine_guid():
     except Exception:
         pass
     return "0000000000000000"
-
-
-def _native_identity():
-    """Return the stable 12-hex GUID and its six-byte hardware identity."""
-    guid = _machine_guid()
-    try:
-        hardware = bytes.fromhex(guid)
-    except ValueError:
-        guid = "000000000000"
-        hardware = bytes.fromhex(guid)
-    if len(hardware) != 6:
-        guid = "000000000000"
-        hardware = bytes.fromhex(guid)
-    return guid, hardware
-
-
-def _native_asset_dir():
-    """Locate the bundled Apple SAP images in source and frozen builds."""
-    return os.path.join(IPATOOL_SEED_ROOT, ".ipatool", "cache", "apple-assets")
-
-
-def _native_auth_record(account):
-    """Serialize only the non-password account result for existing UI code."""
-    return json.dumps({
-        "success": True,
-        "email": account.email,
-        "name": account.name,
-        "password_token": account.password_token,
-        "directory_services_id": account.dsid,
-        "store_front": account.storefront,
-        "pod": account.pod,
-    }, ensure_ascii=False)
-
-
-def _native_error_record(exc):
-    return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
-
-
-def _native_snapshot():
-    with _NATIVE_SESSION_LOCK:
-        return _NATIVE_SESSION, _NATIVE_ACCOUNT, _NATIVE_STORE
-
-
-def _clear_native_auth():
-    global _NATIVE_SESSION, _NATIVE_ACCOUNT, _NATIVE_STORE
-    with _NATIVE_SESSION_LOCK:
-        session = _NATIVE_SESSION
-        _NATIVE_SESSION = None
-        _NATIVE_ACCOUNT = None
-        _NATIVE_STORE = None
-    if session is not None:
-        try:
-            session.close()
-        except Exception as exc:
-            _diagnostic("native_auth_close_exception", repr(exc))
-        try:
-            machine = getattr(session, "machine", None)
-            if machine is not None:
-                machine.close()
-        except Exception as exc:
-            _diagnostic("native_guest_close_exception", repr(exc))
 
 
 def _build_opener(proxy=""):
@@ -2595,6 +2627,13 @@ def _windows_system_proxy():
         return ""
 
 
+# Shared by normal sign-in routing as well as local proxy discovery. This is
+# not part of the removed synthetic-login route probe.
+_LOCAL_PROXY_PORTS = (
+    7890, 7891, 7897, 7898, 7899,
+    1080, 1081, 1087, 10808, 10809, 10810,
+    20171, 2080, 2081, 8888, 8889, 8080, 8081, 4780,
+)
 _local_proxy_cache = None
 
 
@@ -2683,14 +2722,6 @@ def _candidate_proxies():
     return ordered
 
 
-_LOCAL_PROXY_PORTS = (
-    7890, 7891, 7897, 7898, 7899,
-    1080, 1081, 1087, 10808, 10809, 10810,
-    20171, 2080, 2081, 8888, 8889, 8080, 8081, 4780,
-)
-
-_AUTO_EXIT_STATE = {"checked": False, "proxy": None, "score": 0}
-
 _LAST_LOGIN_ROUTES = []
 
 
@@ -2712,133 +2743,6 @@ def _clear_login_challenge_proxy():
         _LOGIN_CHALLENGE_PROXY = None
 
 
-def _port_open(host, port, timeout=0.3):
-    try:
-        sock = socket.create_connection((host, port), timeout=timeout)
-        sock.close()
-        return True
-    except Exception:
-        return False
-
-
-def _exit_candidates(max_items=8):
-    ordered = [""]
-    for value in _candidate_proxies():
-        if value and value not in ordered:
-            ordered.append(value)
-    for port in _LOCAL_PROXY_PORTS:
-        if len(ordered) >= max_items:
-            break
-        if not _port_open("127.0.0.1", port):
-            continue
-        for value in ("http://127.0.0.1:%d" % port, "socks5://127.0.0.1:%d" % port):
-            if value not in ordered and len(ordered) < max_items:
-                ordered.append(value)
-    if "" not in ordered:
-        if len(ordered) >= max_items:
-            ordered[-1] = ""
-        else:
-            ordered.append("")
-    return ordered
-
-
-_PROBE_EMAIL = "route-probe-notreal@example.com"
-_PROBE_PASSWORD = "RouteProbe12345"
-
-
-def _probe_exit_score(proxy_url, attempts=2, timeout=45):
-    best = 0
-    for _ in range(max(1, attempts)):
-        score = _probe_exit_once(proxy_url, timeout=timeout)
-        if score > best:
-            best = score
-        if best >= 3:
-            break
-    return best
-
-
-def _probe_exit_once(proxy_url, timeout=45):
-    if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
-        return 0
-    probe_root = tempfile.mkdtemp(prefix="iOSOldApp_probe_")
-    probe_home = os.path.join(probe_root, "engine_home")
-    env = os.environ.copy()
-    drive, home_path = os.path.splitdrive(os.path.abspath(probe_home))
-    env["HOMEDRIVE"] = drive
-    env["HOMEPATH"] = home_path
-    env["USERPROFILE"] = probe_home
-    env["HOME"] = probe_home
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                 "http_proxy", "https_proxy", "all_proxy"):
-        env.pop(name, None)
-    proxy_url = _http_proxy_for_ipatool(proxy_url)
-    if proxy_url:
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-            env[name] = proxy_url
-    command = [IPATOOL_PATH, "--keychain-passphrase", KEYCHAIN_PASSPHRASE,
-               "auth", "login", "--email", _PROBE_EMAIL,
-               "--password", _PROBE_PASSWORD, "--non-interactive", "--format", "json"]
-    out = ""
-    try:
-        r = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                           text=True, errors="replace", timeout=timeout,
-                           env=env, **_no_window_flags())
-        out = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or "")).strip()
-    except Exception:
-        return 0
-    finally:
-        try:
-            shutil.rmtree(probe_root, ignore_errors=True)
-        except Exception:
-            pass
-    low = out.lower()
-    if "something went wrong" in low:
-        return 0
-    if any(k in low for k in ("incorrect", "invalid", "not found", "locked",
-                              "disabled", "auth-code", "verification")):
-        return 3
-    if _is_transient_apple_edge_error(out):
-        return 0
-    if '"success":true' in out.replace(" ", ""):
-        return 3
-    return 1
-
-
-def _auto_pick_exit():
-    if _AUTO_EXIT_STATE["checked"]:
-        return _AUTO_EXIT_STATE["proxy"], _AUTO_EXIT_STATE["score"]
-    candidates = _exit_candidates()
-    scores = {}
-    lock = threading.Lock()
-
-    def _work(url):
-        score = _probe_exit_score(url)
-        with lock:
-            scores[url] = score
-
-    threads = []
-    for url in candidates:
-        t = threading.Thread(target=_work, args=(url,), daemon=True)
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join(timeout=70)
-
-    best, best_score = None, 0
-    for url in candidates:
-        score = scores.get(url, 0)
-        if score > best_score:
-            best, best_score = url, score
-    _AUTO_EXIT_STATE["checked"] = True
-    _AUTO_EXIT_STATE["proxy"] = best if best_score > 0 else None
-    _AUTO_EXIT_STATE["score"] = best_score
-    return _AUTO_EXIT_STATE["proxy"], best_score
-
-
-def _reset_auto_exit():
-    _AUTO_EXIT_STATE["checked"] = False
-    _AUTO_EXIT_STATE["proxy"] = None
-    _AUTO_EXIT_STATE["score"] = 0
 
 
 # ─────────────────────────────────────────────
@@ -3094,153 +2998,47 @@ def _diag_conclusion(results):
                                  "Some endpoints responded unexpectedly. Try another proxy route and run the check again; if it still fails, share a screenshot of the result."))
 
 
-def _prepare_engine_home():
-    """Prepare a stable HOME and seed ipatool-rs' verified SAP cache."""
-    with _ENGINE_HOME_LOCK:
-        os.makedirs(IPATOOL_SESSION_HOME, exist_ok=True)
-        source_cache = os.path.join(IPATOOL_SEED_ROOT, ".ipatool", "cache")
-        if not os.path.isdir(source_cache):
-            return
-        target_cache = os.path.join(IPATOOL_SESSION_HOME, ".ipatool", "cache")
-        for source_dir, _dirs, filenames in os.walk(source_cache):
-            relative = os.path.relpath(source_dir, source_cache)
-            target_dir = target_cache if relative == "." else os.path.join(target_cache, relative)
-            os.makedirs(target_dir, exist_ok=True)
-            for filename in filenames:
-                source = os.path.join(source_dir, filename)
-                target = os.path.join(target_dir, filename)
-                try:
-                    same = os.path.isfile(target) and os.path.getsize(target) == os.path.getsize(source)
-                except OSError:
-                    same = False
-                if same:
-                    continue
-                temporary = target + ".seed-copy"
-                shutil.copy2(source, temporary)
-                os.replace(temporary, target)
-
-
 def _ipatool_command(args):
-    """"""
-    return [IPATOOL_PATH, "--keychain-passphrase", KEYCHAIN_PASSPHRASE] + list(args)
+    return _ENGINE_SESSION.command(IPATOOL_PATH, list(args))
 
 
 def _clear_runtime_auth(revoke=True):
-    """"""
-    _clear_native_auth()
-    tool = IPATOOL_PATH
-    if revoke and tool and os.path.exists(tool):
-        env = os.environ.copy()
-        env["HOME"] = IPATOOL_SESSION_HOME
-        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                     "http_proxy", "https_proxy", "all_proxy"):
-            env.pop(name, None)
-        try:
-            subprocess.run(
-                _ipatool_command(["auth", "revoke", "--format", "json", "--non-interactive"]),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=25,
-                env=env,
-                **_no_window_flags()
-            )
-        except Exception as exc:
-            _diagnostic("auth_cleanup_exception", repr(exc))
+    # The official Windows engine uses a file keychain in our per-run home.
+    # Removing that home removes credentials AND cookies without a network call.
+    _clear_login_challenge_proxy()
     try:
-        shutil.rmtree(IPATOOL_SESSION_HOME, ignore_errors=True)
+        _ENGINE_SESSION.clear_credentials()
     except Exception as exc:
         _diagnostic("auth_session_cleanup_exception", repr(exc))
 
 
-atexit.register(_clear_runtime_auth)
+def _shutdown_engine():
+    for worker in list(_ACTIVE_TOOL_WORKERS):
+        worker.stop()
+    _ENGINE_SESSION.terminate_all()
+    for worker in list(_ACTIVE_TOOL_WORKERS):
+        try:
+            worker.wait(1500)
+        except RuntimeError:
+            pass
+    _clear_runtime_auth()
+
+
+atexit.register(_shutdown_engine)
 
 
 def _ipatool_env(for_login=False, use_proxy=True, proxy=None):
-    _prepare_engine_home()
-    env = os.environ.copy()
-    env["HOME"] = IPATOOL_SESSION_HOME
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-                 "http_proxy", "https_proxy", "all_proxy"):
-        env.pop(name, None)
-    env.pop("IPATOOL_AUTH_ENDPOINT", None)
-    env.pop("IPATOOL_NO_PASSWORD_STORAGE", None)
     if proxy is None:
         proxy = _resolve_proxy(use_proxy)
-    proxy = _http_proxy_for_ipatool(proxy)
-    if proxy:
-        env["HTTP_PROXY"] = proxy
-        env["HTTPS_PROXY"] = proxy
-        env["http_proxy"] = proxy
-        env["https_proxy"] = proxy
-    return env
+    return _ENGINE_SESSION.environment(_http_proxy_for_ipatool(proxy))
 
 
 def _json_records(text):
-    """"""
-    value = text or ""
-    decoder = json.JSONDecoder()
-    pos = 0
-    while pos < len(value):
-        starts = [i for i in (value.find("{", pos), value.find("[", pos)) if i >= 0]
-        if not starts:
-            break
-        start = min(starts)
-        try:
-            record, end = decoder.raw_decode(value, start)
-        except Exception:
-            pos = start + 1
-            continue
-        yield record
-        pos = end
+    yield from _engine_json_records(text or "")
 
 
 def _auth_result(rc, out):
-    text = (out or "").strip()
-    low = text.lower()
-    code_markers = (
-        "2fa code is required", "2fa code required", "2fa code",
-        "auth code is required", "auth code required", "auth_code_required",
-        "authcoderequired",
-        "two-factor authentication", "two factor authentication",
-        "two-factor code", "two factor code", "verification code",
-        "verification_code", "--auth-code", "双重认证", "两步验证",
-        "验证码", "受信任设备",
-    )
-    needs_code = any(k in low for k in code_markers)
-    success = False
-    identity = ""
-    for record in _json_records(text):
-        if not isinstance(record, dict):
-            continue
-        record_text = " ".join(
-            str(record.get(k, ""))
-            for k in ("message", "error", "reason", "detail", "status", "code"))
-        record_low = record_text.lower()
-        if any(k in record_low for k in code_markers):
-            needs_code = True
-        if any(str(key).lower() in (
-                "auth_code_required", "two_factor_required", "verification_required")
-                and bool(value) for key, value in record.items()):
-            needs_code = True
-        if record.get("success") is True:
-            success = True
-            identity = str(record.get("email") or record.get("name") or "").strip()
-        elif record.get("email") and (
-                "password_token" in record or "directory_services_id" in record or
-                (record.get("name") is not None and record.get("store_front") is not None)):
-            success = True
-            identity = str(record.get("email") or record.get("name") or "").strip()
-    if not success and re.search(r"\bsuccess\s*[=:]\s*true\b", low):
-        success = True
-        match = re.search(r"[\w.+-]+@[\w.-]+", text)
-        identity = match.group(0) if match else ""
-    # Interactive ipatool output keeps the earlier 2FA prompt in the same
-    # stream even after the submitted code succeeds. A confirmed success JSON
-    # must therefore take precedence over stale prompt text.
-    if rc == 0 and success:
-        return True, False, identity
-    return False, needs_code, identity
+    return _engine_auth_result(rc, out)
 
 
 def _is_retryable_login_error(out):
@@ -3257,107 +3055,34 @@ def _is_retryable_login_error(out):
     )) or not low.strip()
 
 
-def _route_summary():
-    try:
-        routes = list(_LAST_LOGIN_ROUTES) or _candidate_proxies()
-    except Exception:
-        routes = [""]
-    names = []
-    for value in routes:
-        label = value if value else localized("直连", "Direct")
-        if label not in names:
-            names.append(label)
-    return localized("、", ", ").join(names)
-
-
-def _network_blocked_tip():
-    tried = len(_LAST_LOGIN_ROUTES) or 1
-    return localized(
-        "\n\n本软件已自动轮换「系统代理 / 本机已监听的代理端口 / 直连」共 %d 条线路依次重试，全部被 Apple 认证服务拒绝或超时。\n这属于 Apple 对当前网络环境的间歇性限制（同一条线路时好时坏），不是账号问题。\n建议：等 1～2 分钟后直接再点一次「登录」，软件会自动重新轮换线路重试；也可以改用手机热点（4G/5G）后再试。",
-        "\n\nThe app automatically retried %d routes (system proxy, local proxy ports, and direct connection), but Apple rejected or timed out on all of them.\nThis is an intermittent restriction on the current network environment, not necessarily an account problem.\nWait 1–2 minutes and try again; a phone hotspot may also help.") % tried
 
 
 def _friendly_auth_error(out):
-    text = (out or "").strip()
-    low = text.lower()
-    # Apple 对无法通过认证的凭据返回空 204（实测两个端点、两条出口结果一致），
-    # 该判定必须优先于网络类判定，否则会把凭据问题误导成「网络出口被限制」。
-    if _is_credential_rejected_error(text):
-        return localized(
-            "Apple 认证服务返回了空响应（HTTP 204），没有给出任何账号数据。\n\n"
-            "这表示 Apple 无法通过本次提交的 Apple ID / 密码完成认证。"
-            "对于无法验证的凭据，Apple 统一返回空响应，不会区分「账号不存在」与「密码错误」，"
-            "所以这通常指向账号或密码问题，而不是网络问题。\n\n"
-            "建议按顺序排查：\n"
-            "1. 核对 Apple ID 与密码（注意大小写，粘贴时避免带上空格）；\n"
-            "2. 用同一账号在 iPhone / iPad 的「设置 → App Store」登录一次，"
-            "确认账号未被锁定、未被要求修改密码；\n"
-            "3. 若账号已开启双重认证，请确保受信任设备在线以便接收验证码。\n\n"
-            "本机网络已实测连通；若确为网络故障，软件会自动列出线路信息。",
-            "Apple returned an empty response (HTTP 204) with no account data.\n\n"
-            "This means Apple could not authenticate the submitted Apple ID / password. For credentials "
-            "it cannot verify, Apple always returns an empty response and does not distinguish "
-            "\"account not found\" from \"wrong password\", so this usually points to the account or the "
-            "password rather than a network problem.\n\n"
-            "Check in this order:\n"
-            "1. Verify the Apple ID and password (watch for letter case and stray spaces);\n"
-            "2. Sign in with the same account under Settings -> App Store on an iPhone / iPad to confirm "
-            "the account is not locked or asked to change its password;\n"
-            "3. If two-factor authentication is enabled, keep a trusted device online to receive the code.\n\n"
-            "Network connectivity on this machine has already been verified.")
-    if ("failed to retrieve redirect location" in low
-            or "something went wrong" in low):
-        return localized(
-            "Apple 认证服务拒绝了当前网络出口（软件已自动尝试：%s）。\n这是 Apple 对大陆网络的已知限制，不是你的账号问题。%s",
-            "Apple rejected the current network exit (routes tried: %s).\nThis is a known restriction affecting some mainland-China networks and is not necessarily an account problem.%s") % (_route_summary(), _network_blocked_tip())
-    if _is_transient_apple_edge_error(text):
-        return localized(
-            "Apple 认证服务未返回有效响应，当前网络出口被限制（软件已自动尝试：%s，仍未通过）。%s",
-            "Apple did not return a valid response; the current network exit may be restricted (routes tried: %s).%s") % (_route_summary(), _network_blocked_tip())
-    if "failed to establish a sap signing session" in low:
-        return localized("Apple 安全登录组件初始化失败，请检查网络后重新登录。",
-                         "Apple's secure sign-in component failed to initialize. Check the network and try again.")
-    if "not logged in" in low:
-        return localized("当前尚未登录。", "You are not signed in.")
-    if "login rejected" in low and "auth-code" in low:
-        return localized("Apple 要求继续验证。若设备已收到验证码，请输入 6 位验证码后提交。",
-                         "Apple requires additional verification. If your trusted device received a code, enter the 6-digit code and submit it.")
+    text = _redact_engine_output((out or "").strip())
     messages = []
     for record in _json_records(text):
         if isinstance(record, dict):
             value = str(record.get("error") or record.get("message") or "").strip()
             if value and value not in messages:
                 messages.append(value)
-    if messages:
-        return "\n".join(messages)[-500:]
-    return text[-500:] or localized("没有收到可确认的登录结果，请重新尝试。",
-                                    "No confirmable sign-in result was received. Try again.")
-
-
-def _is_credential_rejected_error(out):
-    """判断 Apple 是否以「空 204」形式拒绝了本次凭据。
-
-    实测结论（native/fast 与 legacy MZFinance 两个端点，Clash 与直连两条出口）：
-    Apple 对无法通过认证的凭据统一返回 HTTP 204 且响应体为空，不区分
-    「账号不存在」与「密码错误」。该响应与网络出口无关，因此不能用于触发
-    线路轮换，否则会把凭据问题误报成「网络出口被限制」。
-    """
-    low = (out or "").lower()
-    if re.search(r"empty authentication response\s*\(http\s*204", low):
-        return True
-    if re.search(r"http[)\s:]*\s*204\b", low):
-        return True
-    return "204 no content" in low
+    detail = "\n".join(messages)[-700:] if messages else text[-700:]
+    low = detail.lower()
+    if any(word in low for word in ("not logged in", "no account", "could not find account", "no such file")):
+        return localized("当前尚未登录，或本次会话已被清理。", "Not signed in, or this session was cleared.")
+    if any(word in low for word in ("signed authentication request", "no usable authentication response",
+                                    "redirect location", "something went wrong")):
+        return localized(
+            "Apple 认证没有完成；仅凭此错误不能确定是账号、网络还是认证协议的问题。\n%s",
+            "Apple authentication did not complete; this error alone cannot identify an account, network, or protocol cause.\n%s") % detail
+    return detail or localized("没有收到可确认的登录结果，请重新尝试。",
+                               "No confirmable sign-in result was received. Try again.")
 
 
 def _is_transient_apple_edge_error(out):
     low = (out or "").lower()
-    # HTTP 204 属于凭据被拒，不是网络瞬时故障，必须先行排除。
-    if _is_credential_rejected_error(out):
-        return False
-    if re.search(r"http[)\s:]*\s*(301|302|307|404|429|500|502|503|504)", low):
+    if re.search(r"http[)\s:]*\s*(204|301|302|307|404|429|500|502|503|504)", low):
         return True
-    if re.search(r"\b(301|302|404|500|502|503|504)\b[^\n]{0,24}(forbidden|not found|"
+    if re.search(r"\b(204|301|302|404|500|502|503|504)\b[^\n]{0,24}(forbidden|not found|"
                  r"unavailable|no content|moved permanently|bad gateway)", low):
         return True
     return any(k in low for k in (
@@ -3369,81 +3094,93 @@ def _is_transient_apple_edge_error(out):
         "something went wrong"))
 
 
-def _redact_engine_output(out):
-    value = out or ""
-    return re.sub(
-        r'("(?:password|password_token|directory_services_id)"\s*:\s*)"(?:[^"\\]|\\.)*"',
-        r'\1"***"', value, flags=re.IGNORECASE)
+def _redact_engine_output(out, secrets=()):
+    return _engine_redact_output(out, secrets)
 
 
-def run_tool(args, timeout=120, proxy=None):
-    tool = IPATOOL_PATH
-    if not tool or not os.path.exists(tool):
+def run_tool(args, timeout=120, proxy=None, cancel=None):
+    if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
         return -1, "ipatool.exe not found"
+    args = list(args)
     command = _ipatool_command(args)
-    is_login = len(args) >= 2 and list(args[:2]) == ["auth", "login"]
+    is_login = args[:2] == ["auth", "login"]
     has_auth_code = is_login and "--auth-code" in args
+    secrets = []
+    for flag in ("--password", "--auth-code"):
+        if flag in args and args.index(flag) + 1 < len(args):
+            secrets.append(args[args.index(flag) + 1])
     if proxy is not None:
         routes = [proxy]
+    elif has_auth_code:
+        challenge = _get_login_challenge_proxy()
+        routes = [challenge if challenge is not None else _resolve_proxy()]
     elif is_login:
-        routes = _candidate_proxies()
-        # Apple can bind a verification challenge to the network/session that
-        # created it. Reuse that route first when submitting the code instead
-        # of silently starting with a different proxy on every attempt.
-        challenge_proxy = _get_login_challenge_proxy() if has_auth_code else None
-        if challenge_proxy is not None:
-            routes = [challenge_proxy] + [route for route in routes if route != challenge_proxy]
+        routes = _candidate_proxies() or [""]
     else:
         routes = [_resolve_proxy()]
-    routes = routes or [""]
     if is_login:
-        _LAST_LOGIN_ROUTES[:] = routes
-    with IPATOOL_PROCESS_LOCK:
-        last_rc, last_out = -3, ""
-        for route_index, proxy in enumerate(routes):
+        _LAST_LOGIN_ROUTES[:] = []
+    # One total deadline includes waiting for another CLI operation and routes.
+    deadline = time.monotonic() + timeout
+    acquired = False
+    try:
+        while not acquired:
+            if cancel and cancel.is_set():
+                return -4, "login cancelled"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return -2, "timeout waiting for authentication component"
+            acquired = IPATOOL_PROCESS_LOCK.acquire(timeout=min(0.2, remaining))
+        if is_login and not has_auth_code:
+            # Explicit password sign-in must not reuse this process's previous
+            # cookies/account. Keep state only for the matching code continuation.
             try:
-                r = subprocess.run(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=timeout,
-                    env=_ipatool_env(for_login=is_login, proxy=proxy),
-                    **_no_window_flags()
-                )
-            except subprocess.TimeoutExpired:
-                last_rc, last_out = -2, "timeout after %ss" % timeout
-                if is_login and route_index + 1 < len(routes):
-                    time.sleep(0.8)
-                    continue
-                return last_rc, last_out
-            except Exception as e:
-                last_rc, last_out = -3, str(e)
-                if is_login and route_index + 1 < len(routes):
-                    time.sleep(0.8)
-                    continue
-                return last_rc, last_out
-            out = re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or "")).strip()
-            out = _redact_engine_output(out)
-            last_rc, last_out = r.returncode, out
+                _ENGINE_SESSION.clear_credentials()
+                _clear_login_challenge_proxy()
+            except Exception:
+                return -3, localized(
+                    "无法清理上次的本地登录状态，本次登录已停止。请完全退出软件后重试。",
+                    "Previous local sign-in state could not be cleared. Sign-in was stopped; fully exit the app and retry.")
+        last_rc, last_out = -3, ""
+        for index, route in enumerate(routes):
+            if cancel and cancel.is_set():
+                return -4, "login cancelled"
             if is_login:
-                _logged, needs_code, _who = _auth_result(r.returncode, out)
-                if needs_code:
-                    _set_login_challenge_proxy(proxy)
-                    return r.returncode, out
-                if _logged:
-                    _set_login_challenge_proxy(proxy)
-                    return r.returncode, out
-                if (_is_retryable_login_error(out)
-                        and route_index + 1 < len(routes)):
-                    time.sleep(1.0 + route_index * 0.5)
+                _LAST_LOGIN_ROUTES.append(route)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return -2, "timeout after %ss" % timeout
+            # Initial runtime downloads may need more than a minute. Retry a
+            # different route only on a returned error, within the same budget.
+            budget = remaining
+            try:
+                env = _ipatool_env(for_login=is_login, proxy=route)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return -2, "timeout preparing authentication component"
+                rc, out = _ENGINE_SESSION.execute(command, env, min(budget, remaining), cancel)
+            except Exception as exc:
+                rc, out = -3, str(exc)
+            out = _redact_engine_output(re.sub(r"\x1b\[[0-9;]*m", "", out).strip(), secrets)
+            last_rc, last_out = rc, out
+            if rc == -4:
+                return rc, out
+            if is_login:
+                logged, needs_code, _ = _auth_result(rc, out)
+                if needs_code or logged:
+                    _set_login_challenge_proxy(route)
+                    return rc, out
+                # Never replay a submitted verification code on a new route.
+                if not has_auth_code and index + 1 < len(routes) and (
+                        rc == -2 or _is_retryable_login_error(out)):
                     continue
                 if not has_auth_code:
                     _clear_login_challenge_proxy()
-            return r.returncode, out
+            return rc, out
         return last_rc, last_out or "登录请求未完成"
+    finally:
+        if acquired:
+            IPATOOL_PROCESS_LOCK.release()
 
 
 def check_login_status(ipatool_path=None):
@@ -3466,323 +3203,6 @@ class WorkerSignals(QObject):
     error = pyqtSignal(str)
     data = pyqtSignal(object)
 
-class _ConPtyProcess:
-    """Small adapter around pywinpty's maintained Windows PTY binding."""
-
-    def __init__(self, command, env, cwd):
-        try:
-            from winpty import PtyProcess
-        except ImportError as exc:
-            raise RuntimeError(
-                "缺少交互式登录组件 pywinpty，请重新下载完整的软件") from exc
-        self._proc = PtyProcess.spawn(
-            command, cwd=cwd, env=env, dimensions=(30, 120))
-        try:
-            self._proc.fileobj.settimeout(0.08)
-        except Exception:
-            pass
-
-    def read_available(self):
-        try:
-            value = self._proc.read(16384)
-        except (socket.timeout, EOFError, OSError):
-            return b""
-        if not value:
-            return b""
-        return value.encode("utf-8", "replace") if isinstance(value, str) else value
-
-    def write(self, value):
-        self._proc.write(str(value))
-
-    def wait(self, timeout_ms):
-        if not self._proc.isalive():
-            return True
-        if timeout_ms:
-            time.sleep(timeout_ms / 1000.0)
-        return not self._proc.isalive()
-
-    def exit_code(self):
-        try:
-            value = self._proc.exitstatus
-            return int(value) if value is not None else 1
-        except Exception:
-            return 1
-
-    def terminate(self):
-        try:
-            self._proc.terminate(force=True)
-        except Exception:
-            try:
-                self._proc.close(force=True)
-            except Exception:
-                pass
-
-    def close(self):
-        try:
-            self._proc.close(force=True)
-        except Exception:
-            pass
-
-
-def _strip_terminal_output(value):
-    value = str(value or "")
-    value = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", value)
-    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
-    return value.replace("\r\n", "\n").replace("\r", "\n")
-
-
-class InteractiveLoginWorker(QThread):
-    """Complete password and 2FA login through one ipatool-rs process."""
-
-    twofa_requested = pyqtSignal()
-    done = pyqtSignal(int, str)
-
-    def __init__(self, email, password, timeout=180):
-        super().__init__()
-        self.email = email
-        self.password = password
-        self.timeout = timeout
-        self._stop_event = threading.Event()
-        self._io_lock = threading.Lock()
-        self._process = None
-
-    def submit_code(self, code):
-        with self._io_lock:
-            process = self._process
-            if process is not None:
-                process.write(str(code) + "\r")
-
-    def stop(self):
-        self._stop_event.set()
-        with self._io_lock:
-            process = self._process
-            if process is not None:
-                process.terminate()
-
-    def _run_route(self, route):
-        command = _ipatool_command([
-            "auth", "login", "--email", self.email, "--format", "json"])
-        env = _ipatool_env(for_login=True, proxy=route)
-        process = None
-        chunks = []
-        password_sent = False
-        code_prompted = False
-        started = time.time()
-        try:
-            process = _ConPtyProcess(command, env, APP_DIR)
-            with self._io_lock:
-                self._process = process
-            while time.time() - started < self.timeout:
-                if self._stop_event.is_set():
-                    return -4, "login cancelled"
-                data = process.read_available()
-                if data:
-                    chunk = data.decode("utf-8", "replace")
-                    chunks.append(chunk)
-                    clean_tail = _strip_terminal_output("".join(chunks)[-1200:])
-                    if not password_sent and re.search(
-                            r"(?i)(?:password|密码)\s*[:：]", clean_tail):
-                        process.write(self.password + "\r")
-                        password_sent = True
-                    if not code_prompted and re.search(
-                            r"(?i)(?:two[- ]factor code|verification code|验证码)", clean_tail):
-                        code_prompted = True
-                        _set_login_challenge_proxy(route)
-                        self.twofa_requested.emit()
-                if process.wait(0):
-                    break
-                self.msleep(60)
-            else:
-                process.terminate()
-                return -2, "timeout after %ss" % self.timeout
-
-            # Drain the terminal after the child exits so JSON/error text is not
-            # lost between the final ReadFile and process completion.
-            for _ in range(8):
-                data = process.read_available()
-                if not data:
-                    break
-                chunks.append(data.decode("utf-8", "replace"))
-                self.msleep(20)
-            return process.exit_code(), _redact_engine_output(
-                _strip_terminal_output("".join(chunks)).strip())
-        except Exception as exc:
-            _diagnostic("interactive_login_exception", repr(exc))
-            return -1, str(exc)
-        finally:
-            with self._io_lock:
-                if self._process is process:
-                    self._process = None
-            if process is not None:
-                process.close()
-
-    def run(self):
-        if os.name != "nt":
-            self.done.emit(-1, "Windows ConPTY is required")
-            return
-        if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
-            self.done.emit(-1, "ipatool.exe not found")
-            return
-
-        routes = _candidate_proxies() or [""]
-        _LAST_LOGIN_ROUTES[:] = routes
-        last_rc, last_out = -3, ""
-        with IPATOOL_PROCESS_LOCK:
-            for index, route in enumerate(routes):
-                if self._stop_event.is_set():
-                    self.done.emit(-4, "login cancelled")
-                    return
-                last_rc, last_out = self._run_route(route)
-                authenticated, needs_code, _ = _auth_result(last_rc, last_out)
-                if authenticated:
-                    _clear_login_challenge_proxy()
-                    self.done.emit(last_rc, last_out)
-                    return
-                if needs_code:
-                    self.done.emit(last_rc, last_out)
-                    return
-                if not _is_retryable_login_error(last_out) or index + 1 >= len(routes):
-                    break
-                self.msleep(700 + index * 400)
-        self.done.emit(last_rc, last_out or "登录请求未完成")
-
-
-# CoreFP/CommerceKit 的 SAP 调用在 unicorn 模拟器里执行，递归与调用深度较大。
-# QThread 的默认栈远小于主线程，在子线程里跑模拟会因栈溢出导致进程直接崩溃
-# （表现为"点击登录后闪退"，且没有 Python 异常），因此必须为登录线程放大栈。
-SAP_WORKER_STACK_SIZE = 64 * 1024 * 1024
-
-
-class NativeLoginWorker(QThread):
-    """Authenticate directly through Apple's protocol and local SAP runtime."""
-
-    twofa_requested = pyqtSignal()
-    done = pyqtSignal(int, str)
-
-    def __init__(self, email, password, timeout=180):
-        super().__init__()
-        # 栈大小必须在线程 start() 之前设置。
-        # 注意：PyQt6 6.x 把 QThread.setStackSize 绑定为实例方法（methoddescriptor），
-        # 按静态方式 QThread.setStackSize(int) 调用会抛
-        # "first argument of unbound method must have type 'QThread'"，
-        # 因此这里按实例形式调用。
-        self.setStackSize(SAP_WORKER_STACK_SIZE)
-        self.email = str(email)
-        self.password = str(password)
-        self.timeout = int(timeout)
-        self._stop_event = threading.Event()
-        self._code_event = threading.Event()
-        self._code_lock = threading.Lock()
-        self._code = ""
-
-    def submit_code(self, code):
-        with self._code_lock:
-            self._code = str(code or "").strip()
-        self._code_event.set()
-
-    def stop(self):
-        self._stop_event.set()
-        self._code_event.set()
-
-    def _wait_for_code(self, _pending):
-        with self._code_lock:
-            self._code = ""
-        self._code_event.clear()
-        self.twofa_requested.emit()
-        deadline = time.time() + self.timeout
-        while time.time() < deadline:
-            if self._stop_event.is_set():
-                raise LoginIncomplete("login cancelled")
-            if self._code_event.wait(0.2):
-                with self._code_lock:
-                    code = self._code
-                if code:
-                    return code
-                self._code_event.clear()
-        raise LoginIncomplete("verification code timed out")
-
-    @staticmethod
-    def _close_machine(sap, machine):
-        try:
-            if sap is not None:
-                sap.close()
-        except Exception as exc:
-            _diagnostic("native_sap_close_exception", repr(exc))
-        try:
-            if machine is not None:
-                machine.close()
-        except Exception as exc:
-            _diagnostic("native_guest_close_exception", repr(exc))
-
-    def _run_route(self, route):
-        machine = None
-        sap = None
-        keep_session = False
-        try:
-            if self._stop_event.is_set():
-                return -4, _native_error_record(LoginIncomplete("login cancelled"))
-            guid, hardware_id = _native_identity()
-            transport = AppleTransport(proxy=route, timeout=30)
-            bag = fetch_bag(transport)
-            machine = SapGuest(_native_asset_dir())
-            sap = SapSession(transport, bag.sap, machine, hardware_id).establish()
-            authenticator = AppleAuthenticator(transport, guid, bag)
-            account = authenticator.login(
-                self.email,
-                self.password,
-                signer=sap,
-                code_provider=self._wait_for_code,
-            )
-            if not isinstance(account, AppleAccount) or not account.valid:
-                raise NativeClientError("Apple returned an incomplete account session")
-            store = AppleStoreClient(transport, account=account, guid=guid)
-            global _NATIVE_SESSION, _NATIVE_ACCOUNT, _NATIVE_STORE
-            with _NATIVE_SESSION_LOCK:
-                old_session = _NATIVE_SESSION
-                old_store = _NATIVE_STORE
-                _NATIVE_SESSION = sap
-                _NATIVE_ACCOUNT = account
-                _NATIVE_STORE = store
-            if old_session is not None and old_session is not sap:
-                try:
-                    old_session.close()
-                except Exception:
-                    pass
-            del old_store
-            keep_session = True
-            return 0, _native_auth_record(account)
-        except LoginIncomplete as exc:
-            return -4 if self._stop_event.is_set() else 1, _native_error_record(exc)
-        except Exception as exc:
-            _diagnostic("native_login_exception", repr(exc))
-            return 1, _native_error_record(exc)
-        finally:
-            if not keep_session:
-                self._close_machine(sap, machine)
-
-    def run(self):
-        routes = _candidate_proxies() or [""]
-        _LAST_LOGIN_ROUTES[:] = routes
-        last_rc, last_out = -3, ""
-        with IPATOOL_PROCESS_LOCK:
-            for index, route in enumerate(routes):
-                if self._stop_event.is_set():
-                    self.done.emit(-4, _native_error_record(LoginIncomplete("login cancelled")))
-                    return
-                last_rc, last_out = self._run_route(route)
-                if last_rc == 0 or last_rc == -4:
-                    self.done.emit(last_rc, last_out)
-                    return
-                # The route may be rejected before Apple evaluates the
-                # account. Retry only those transport/edge failures; account
-                # and verification errors are returned immediately.
-                if not _is_retryable_login_error(last_out) or index + 1 >= len(routes):
-                    break
-                self.msleep(700 + index * 400)
-        self.done.emit(last_rc, last_out or _native_error_record(
-            NativeClientError("login request did not complete")))
-
-
 class ToolWorker(QThread):
     done = pyqtSignal(int, str)
 
@@ -3791,13 +3211,18 @@ class ToolWorker(QThread):
         self.args = args
         self.timeout = timeout
         self.proxy = proxy
+        self._cancel = threading.Event()
+
+    def stop(self):
+        self._cancel.set()
 
     def run(self):
         try:
-            rc, out = run_tool(self.args, timeout=self.timeout, proxy=self.proxy)
+            rc, out = run_tool(self.args, timeout=self.timeout, proxy=self.proxy, cancel=self._cancel)
         except Exception as exc:
             _diagnostic("tool_worker_exception", repr(exc))
             rc, out = -3, str(exc)
+        self.args = []
         self.done.emit(rc, out)
 
 
@@ -3860,10 +3285,13 @@ class SearchWorker(QThread):
             self.signals.finished.emit()
 
 class HistoryWorker(QThread):
-    def __init__(self, app_id, mode="local"):
+    def __init__(self, app_id, mode="local", bundle_identifier="",
+                 allow_auto_purchase=False):
         super().__init__()
         self.app_id = app_id
         self.mode = mode
+        self.bundle_identifier = bundle_identifier
+        self.allow_auto_purchase = allow_auto_purchase
         self.signals = WorkerSignals()
         self._stop = False
 
@@ -3873,7 +3301,8 @@ class HistoryWorker(QThread):
     def run(self):
         try:
             if self.mode == "apple":
-                rows = api_fetch_history_apple(self.app_id)
+                rows = api_fetch_history_apple(
+                    self.app_id, self.bundle_identifier, self.allow_auto_purchase)
             else:
                 rows = api_fetch_history_local(self.app_id)
             if not self._stop:
@@ -3947,7 +3376,8 @@ class DownloadWorker(QThread):
                 "download",
                 "--app-id", str(q["app_id"]),
                 "--bundle-identifier", q["bundle"],
-                "--version-id", str(q["version_id"]),
+                "--external-version-id", str(q["version_id"]),
+                "--platform", "iphone",
                 "--output", q["out"],
                 "--purchase",
                 "--format", "json",
@@ -3965,7 +3395,7 @@ class DownloadWorker(QThread):
 
     @staticmethod
     def _candidate_paths(q):
-        # ipatool-rs 下载期间实际写入 .tmp；部分版本使用 .part。
+        # The official engine downloads into .tmp before applying IPA patches.
         return (q["out"] + ".tmp", q["out"] + ".part", q["out"])
 
     def _current_size(self, q):
@@ -3977,96 +3407,12 @@ class DownloadWorker(QThread):
                 pass
         return 0
 
-    def _stream_native(self, q, store):
-        raw_path = q["out"] + ".native.raw"
-        started = time.time()
-        last_time = [started]
-        last_size = [0]
-        speed = [0.0]
-        try:
-            self.progress.emit(localized("[授权] 正在确认应用授权...", "[LICENSE] Checking app authorization..."))
-            store.purchase(q["app_id"])
-            if self._action in ("paused", "cancelled"):
-                raise RuntimeError("__native_%s__" % self._action)
-            self.progress.emit(localized("[信息] 正在获取下载地址...", "[INFO] Resolving download URL..."))
-            product = store.resolve_download(q["app_id"], q["version_id"])
-            _session, account, _store = _native_snapshot()
-            if account is None:
-                raise NativeClientError("登录会话已结束，请重新登录")
-
-            def _progress(written, total):
-                if self._action in ("paused", "cancelled"):
-                    raise RuntimeError("__native_%s__" % self._action)
-                now = time.time()
-                delta = max(0.001, now - last_time[0])
-                instant = max(0, written - last_size[0]) / delta
-                speed[0] = instant if speed[0] <= 0 else speed[0] * 0.65 + instant * 0.35
-                last_time[0], last_size[0] = now, written
-                actual_total = int(total or q.get("total") or 0)
-                percent = min(99, int(written * 100 / actual_total)) if actual_total else -1
-                eta = int((actual_total - written) / speed[0]) if actual_total > written and speed[0] > 1 else -1
-                self.task_update.emit(q["id"], {
-                    "status": "downloading", "downloaded": written, "total": actual_total,
-                    "speed": speed[0], "percent": percent,
-                    "elapsed": int(now - started), "eta": eta,
-                })
-                if percent >= 0:
-                    self.progress_pct.emit(percent)
-
-            self.progress.emit(localized("[下载] 开始接收 IPA...", "[DOWNLOAD] Receiving IPA..."))
-            store.download(product, raw_path, progress=_progress)
-            if self._action == "paused":
-                self.task_update.emit(q["id"], {"status": "paused", "speed": 0.0})
-                return "paused", ""
-            if self._action == "cancelled":
-                self.task_update.emit(q["id"], {"status": "cancelled", "speed": 0.0})
-                return "cancelled", ""
-            self.progress.emit(localized("[处理] 正在写入授权信息...", "[PATCH] Writing authorization metadata..."))
-            patch_ipa(raw_path, q["out"], product.sinfs, product.metadata, account.email)
-            try:
-                os.remove(raw_path)
-            except OSError:
-                pass
-            final_size = os.path.getsize(q["out"])
-            self.progress.emit("[OK] %s" % q["out"])
-            self.progress_pct.emit(100)
-            self.task_update.emit(q["id"], {
-                "status": "completed", "downloaded": final_size, "total": final_size,
-                "speed": 0.0, "percent": 100, "eta": 0, "error": "",
-            })
-            return "completed", ""
-        except RuntimeError as exc:
-            marker = str(exc)
-            if marker == "__native_paused__":
-                self.task_update.emit(q["id"], {"status": "paused", "speed": 0.0})
-                return "paused", ""
-            if marker == "__native_cancelled__":
-                self.task_update.emit(q["id"], {"status": "cancelled", "speed": 0.0})
-                return "cancelled", ""
-            raise
-        except Exception as exc:
-            reason = localized("下载失败：%s", "Download failed: %s") % str(exc)[:240]
-            self.progress.emit("[FAIL] %s" % reason)
-            self.progress_pct.emit(0)
-            self.task_update.emit(q["id"], {"status": "failed", "speed": 0.0, "error": reason})
-            return "failed", reason
-        finally:
-            if os.path.isfile(raw_path):
-                try:
-                    os.remove(raw_path)
-                except OSError:
-                    pass
-
     def _stream(self, q, args):
-        _session, _account, native_store = _native_snapshot()
-        if native_store is not None:
-            return self._stream_native(q, native_store)
         env = _ipatool_env(for_login=False)
         command = _ipatool_command(args)
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+        proc = _ENGINE_SESSION.launch(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, env=env, text=True,
-                                encoding="utf-8", errors="replace", bufsize=1,
-                                **_no_window_flags())
+                                encoding="utf-8", errors="replace", bufsize=1)
         self._proc = proc
         self._last_activity = time.time()
         stall_timeout = 600
@@ -4109,7 +3455,7 @@ class DownloadWorker(QThread):
         monitor = threading.Thread(target=_monitor_file, daemon=True)
         monitor.start()
         for raw in proc.stdout:
-            piece = raw.strip()
+            piece = _redact_engine_output(raw.strip())
             if piece:
                 self._last_activity = time.time()
                 output_lines.append(piece)
@@ -4293,8 +3639,11 @@ class TransparentMacWindow(QMainWindow):
 
     def _exit_app(self):
         self._stop_content_worker()
+        for worker in list(self._download_workers.values()):
+            worker.cancel()
         if self.tray_icon:
             self.tray_icon.hide()
+        _shutdown_engine()
         QApplication.quit()
 
     def _stop_content_worker(self):
@@ -4555,19 +3904,10 @@ class TransparentMacWindow(QMainWindow):
         self.login_status_lbl.setStyleSheet(
             "QLabel{font-size:12px;color:#888;background:rgba(255,255,255,70);"
             "border-radius:8px;padding:4px 10px;}")
-        _session, account, _store = _native_snapshot()
-        QTimer.singleShot(
-            0,
-            lambda: self._on_login_status(
-                0 if account is not None else 1,
-                _native_auth_record(account) if account is not None else "",
-            ),
-        )
+        self._run_tool_async(["auth", "info", "--format", "json"], self._on_login_status, timeout=45)
 
     def _on_login_status(self, rc, out):
-        _session, account, _store = _native_snapshot()
-        logged = account is not None
-        who = account.email if account is not None else ""
+        logged, _, who = _auth_result(rc, out)
         self.logged_in = logged
         self._last_login_who = who or "Apple ID"
         if logged:
@@ -4935,7 +4275,11 @@ class TransparentMacWindow(QMainWindow):
         self.history_table.setRowCount(0)
         self._stop_content_worker()
         generation = self._history_generation
-        worker = HistoryWorker(app["track_id"], self.history_mode)
+        worker = HistoryWorker(
+            app["track_id"], self.history_mode,
+            bundle_identifier=app.get("bundle_id", ""),
+            allow_auto_purchase=bool(app.get("is_free")),
+        )
         self.worker = worker
         self._track_content_worker(worker)
         worker.signals.data.connect(
@@ -4949,6 +4293,9 @@ class TransparentMacWindow(QMainWindow):
     def _on_history_data(self, rows, generation=None):
         if generation is not None and generation != self._history_generation:
             return
+        notice = ""
+        if rows:
+            notice = str(rows[0].pop("_notice", "") or "").strip()
         self.history_rows = rows
         self.history_table.setSortingEnabled(False)
         self.history_table.setRowCount(len(rows))
@@ -4977,11 +4324,12 @@ class TransparentMacWindow(QMainWindow):
             self.history_table.setItem(r, 4, date_item)
         self.history_table.setSortingEnabled(True)
         self.history_table.sortItems(2, Qt.SortOrder.DescendingOrder)
+        count_text = tr("history_count") % (
+            tr("current_app") % (self.current_app["track_name"],
+                                  self.current_app["bundle_id"],
+                                  self.current_app["track_id"]), len(rows))
         self.history_app_info.setText(
-            tr("history_count") % (
-                tr("current_app") % (self.current_app["track_name"],
-                                      self.current_app["bundle_id"],
-                                      self.current_app["track_id"]), len(rows)))
+            "%s\n%s" % (notice, count_text) if notice else count_text)
 
     def _on_history_finished(self, generation=None, worker=None):
         if generation is not None and generation != self._history_generation:
@@ -5058,8 +4406,7 @@ class TransparentMacWindow(QMainWindow):
     # ═════════════════════════════════════════
     # ═════════════════════════════════════════
     def _start_download(self, picked):
-        _session, _account, native_store = _native_snapshot()
-        if native_store is None:
+        if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
             MacStyleMessageBox(self, title=tr("component_error_title"),
                                message=localized("下载组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
                                                  "The download component is missing. Download the complete package again."),
@@ -5084,22 +4431,14 @@ class TransparentMacWindow(QMainWindow):
         if getattr(self, "_pre_check_busy", False):
             return
         self._pre_check_busy = True
-        _session, account, _store = _native_snapshot()
-        QTimer.singleShot(
-            0,
-            lambda: self._on_pre_download_check(
-                0 if account is not None else 1,
-                _native_auth_record(account) if account is not None else "",
-                tasks,
-            ),
-        )
+        self._run_tool_async(["auth", "info", "--format", "json"],
+                             lambda rc, out: self._on_pre_download_check(rc, out, tasks),
+                             timeout=45)
 
     def _on_pre_download_check(self, rc, out, picked):
         global APPLE_ID_SAVE
         self._pre_check_busy = False
-        _session, account, _store = _native_snapshot()
-        logged = account is not None
-        who = account.email if account is not None else ""
+        logged, _, who = _auth_result(rc, out)
 
         if not logged:
             MacStyleMessageBox(
@@ -5887,7 +5226,62 @@ class TransparentMacWindow(QMainWindow):
 
 # ─────────────────────────────────────────────
 # ─────────────────────────────────────────────
+def _frozen_smoke_test(report_path):
+    """Opt-in packaging check. No Apple credentials or network requests."""
+    from pathlib import Path
+    import hashlib
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    app = QApplication.instance() or QApplication([])
+    # The offscreen platform does not enumerate Windows fallback fonts.
+    from PyQt6.QtGui import QFontDatabase
+    for name in ("msyh.ttc", "seguiemj.ttf"):
+        font_path = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / name
+        if font_path.is_file():
+            QFontDatabase.addApplicationFont(str(font_path))
+    app.setFont(QFont("Microsoft YaHei"))
+    class TestSettings(SettingsDialog):
+        def _refresh_status(self):
+            pass
+    settings = TestSettings()
+    settings.twofa_row_widget.setVisible(True)
+    settings.status_card.setText(tr("twofa_status_html"))
+    settings.show()
+    app.processEvents()
+    # Exercise the same automatic route discovery used by the login button.
+    # The CLI checks below deliberately use direct mode and cannot cover it.
+    auto_routes = _candidate_proxies()
+    automatic_proxy = _resolve_proxy()
+    version_rc, version_out = run_tool(["--version"], timeout=15, proxy="")
+    info_rc, info_out = run_tool(["auth", "info", "--format", "json", "--non-interactive"], timeout=15, proxy="")
+    report = {
+        "application_version": APP_VERSION,
+        "engine_version": version_out,
+        "engine_sha256": hashlib.sha256(Path(IPATOOL_PATH).read_bytes()).hexdigest() if IPATOOL_PATH else "",
+        "qt_widgets_loaded": True,
+        "automatic_proxy_detection_completed": bool(auto_routes) and isinstance(automatic_proxy, str),
+        "fresh_session_not_logged_in": info_rc == 1 and "keyring" in info_out.lower(),
+        "status_text_fits": settings.status_card.height() >= settings.status_card.sizeHint().height(),
+        "uses_independent_python_sap": False,
+    }
+    report["passed"] = (version_rc == 0 and "2.7.0" in version_out and
+                        report["fresh_session_not_logged_in"] and report["status_text_fits"] and
+                        report["automatic_proxy_detection_completed"] and
+                        report["engine_sha256"] == "7b83589b74ad533f5d5dbab0ca87a5cb76b123bcbeb2553d57e9c154e35d8755")
+    target = Path(report_path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    settings.grab().save(str(target.with_suffix(".png")))
+    target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    settings.reject()
+    _shutdown_engine()
+    return 0 if report["passed"] else 1
+
+
 def main():
+    if "--self-test" in sys.argv:
+        index = sys.argv.index("--self-test")
+        if index + 1 >= len(sys.argv):
+            raise ValueError("--self-test requires a report file path")
+        sys.exit(_frozen_smoke_test(sys.argv[index + 1]))
     try:
         _clear_runtime_auth()
         load_config()
@@ -5911,10 +5305,10 @@ def main():
         win.show()
         win.raise_()
         win.activateWindow()
-        if not os.path.isfile(os.path.join(_native_asset_dir(), "CoreFP")):
+        if not IPATOOL_PATH:
             QTimer.singleShot(600, lambda: MacStyleMessageBox(
                 win, title="软件组件异常",
-                message="Apple 登录运行组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
+                message="内部下载组件缺失，当前程序可能不完整。\n请重新下载完整的软件。",
                 icon_type="warning").exec())
         else:
             win._arm_startup_login_tip()

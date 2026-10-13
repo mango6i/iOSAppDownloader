@@ -1,5 +1,43 @@
 # 更新日志
 
+## v1.0.7 修订发布 — 2026-10-13
+
+- 每次主动点击登录 / 重新登录前清理旧的本地凭据及 Cookie，清理失败则停止登录；验证码续接保留当前挑战。此操作不撤销 Apple 服务端设备信任，也不保证每次收到验证码。
+- 登录成功后点击“确定”同时关闭设置 / 登录窗口，回到主界面，保留已登录会话；失败或等待验证码时仍保持窗口打开。
+- 保留远端的弹窗不透明背景、长文案和状态卡片滚动修复，移除已经弃用的独立 Python 认证及其打包依赖。
+- 修复自动代理检测缺少端口列表定义导致点击登录立即出现 NameError；新增实际登录入口、代理回退和未定义名称检查。
+- 原版改用官方 majd/ipatool v2.7.0：新版签名认证、重定向处理、手机号账号、版本列表 / 元数据与历史 IPA 下载。
+- 正确区分验证码挑战、认证成功和组件 / 网络错误；移除验证码自动重放和无验证码自动重登。
+- 登录可取消、线路共用总超时；独立临时凭据目录和随机加密口令，正常退出清除凭据 / Cookie，运行组件缓存单独保留。
+- 修正双重认证提示区域高度，增加接口与成品检查；软件版本和 EXE 名称仍保持 1.0.7。
+- 用户已确认本次测试版登录成功；下载未在自动检查中使用真实账号验证。不接入 MCP 或其他平台界面。详见 docs/releases/v1.0.7.md。
+
+## v1.0.7 — 2026-09-14
+
+### 中文
+
+- 移除会导致 `0xC0000142`、Rust `unwrap` 异常和登录闪退的 `pywinpty/ConPTY` 登录路径。
+- 恢复已验证可用的 `ipatool-rs` 非交互式登录与双重认证续接流程；验证码提交固定复用首次登录使用的网络线路。
+- 验证码提交后再次读取真实账号状态，避免仅凭一次命令输出误判正确验证码失败。
+- 修复验证码提交后 Apple 仍要求双重认证时又自动发起无验证码登录补救的问题，避免界面表现为“一直提交”。
+- 关闭或退出软件时会主动撤销并删除本地 Apple 登录会话，下次打开需要重新登录和重新完成双重认证。
+- 修复已登录账号查询从未获取过的免费应用时出现 `unexpected response: empty songList`：官方列表查询现在会同时传入 App ID 和 Bundle ID，自动获取一次免费许可后重试；付费应用不会自动购买。
+- 如果 Apple 在获取免费许可后仍返回空官方列表，自动回退到“免登录查询”填充历史版本表，不再弹窗阻断操作。
+- 将内置 `ipatool.exe` 放入独立运行目录，避免与 PyInstaller 内的 Python/Qt DLL 发生加载冲突。
+- 打包配置允许在没有本地 SAP 种子缓存时正常构建，并将程序文件名和文件属性升级为 `iOSAppDownloader_v1.0.7.exe`。
+
+### English
+
+- Removed the `pywinpty/ConPTY` sign-in path that could fail with `0xC0000142`, Rust `unwrap` panics, or an application crash.
+- Restored the proven non-interactive `ipatool-rs` sign-in and two-factor continuation flow, keeping verification on the same network route as the initial challenge.
+- Rechecks the actual account session after code submission instead of rejecting a valid code from one command result.
+- Stops the automatic no-code recovery when Apple still explicitly requires two-factor authentication after code submission, preventing the UI from looking like it is repeatedly submitting the same code.
+- Revokes and deletes the local Apple sign-in session when the app exits, so the next launch requires signing in and completing two-factor authentication again.
+- Fixes `unexpected response: empty songList` for free apps never obtained by the signed-in account: the official lookup now supplies both App ID and bundle ID, obtains the free license once, and retries. Paid apps are never purchased automatically.
+- Falls back to Login-free lookup when Apple still returns an empty official list after the free-license retry, keeping the history table usable instead of blocking with an error dialog.
+- Packages `ipatool.exe` in an isolated runtime directory to prevent DLL collisions with bundled Python and Qt libraries.
+- Allows builds without a local SAP seed cache and updates the executable name and metadata to `iOSAppDownloader_v1.0.7.exe`.
+
 ## v1.0.6 — 2026-09-04
 
 ### 中文

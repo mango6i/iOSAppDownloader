@@ -15,7 +15,7 @@ A simple Windows tool for searching App Store apps, viewing older versions, and 
 
 ## Features
 
-- Apple ID sign-in with two-factor authentication code support
+- Apple ID email/phone-number sign-in with 2FA, using official ipatool v2.7.0
 - Automatically tries the system proxy, local proxy ports, and direct connection
 - The account session is valid only while the app is running; sign-out and exit clear it
 - Version History provides “Official version list” and “Login-free lookup” modes
@@ -64,7 +64,8 @@ This repository contains the project source. Windows binaries are published only
 - `ios_old_app_downloader.py`: main source file
 - `ios_old_app_downloader.spec` and `appstore.ico`: packaging configuration and icon; the versioned filename and Windows metadata are generated from the application source
 - `requirements.txt`: Python build dependencies
-- `ipatool/`: required ipatool-rs runtime components
+- `engine_adapter.py`: official CLI adapter, isolated sessions and cancellation
+- `ipatool/majd/`: official ipatool v2.7.0 license/checksums; `prepare_engine.py` prepares the engine from its official release before source builds. Packaged EXEs already include it.
 - `docs/releases/`: release notes organized by version
 
 Download the latest EXE from Releases for normal use, or inspect the source and rebuild it in your own environment.
@@ -75,4 +76,10 @@ The Chinese and English UI strings are centralized in the `TRANSLATIONS` diction
 
 ## API Source
 
-The Apple ID sign-in, version listing, and IPA download capabilities use the open-source **ipatool** API. The bundled Windows runtime component is provided by [Kosthi/ipatool-rs](https://github.com/Kosthi/ipatool-rs).
+The Windows backend is now [majd/ipatool v2.7.0](https://github.com/majd/ipatool/releases/tag/v2.7.0), replacing Kosthi/ipatool-rs. It does not use browser authentication, third-party signing servers, or the abandoned independent Python authentication implementation.
+
+The app version remains **v1.0.7**. This revision integrates upstream authentication/redirect handling, phone-number Apple IDs, official version discovery/metadata and historical IPA downloads. Other-platform commands and the MCP server are not exposed.
+
+Each launch has an isolated account directory and random keychain passphrase. Normal exit deletes account credentials and cookies while preserving non-secret runtime assets separately. Apple decides whether to require 2FA or push a trusted-device notification; the app cannot force either. Missing runtime components are downloaded and verified by upstream on first use, which may take longer.
+
+Source setup: `pip install -r requirements.txt`, then `python prepare_engine.py` (verifies both archive and executable SHA-256, and reuses an already verified engine). Tests: `python -m unittest test_engine_adapter -v`. Build: `pyinstaller --clean --noconfirm ios_old_app_downloader.spec`. Offline packaged check: `iOSAppDownloader_v1.0.7.exe --self-test report.json`; it does not sign in or purchase anything.

@@ -10,6 +10,8 @@ _build_artifacts_trash/
 # 打包后的单文件成品（请走 GitHub Release 发布，不要进 git）
 iOSAppDownloader.exe
 iOSAppDownloader_v*.exe
+# Prepared from the pinned official release; included in the packaged EXE.
+ipatool/majd/ipatool.exe
 # Apple 专有 SAP 签名引擎种子（CommerceKit / CoreFP 等，体积大且有再分发限制）
 ipatool/engine_seed/
 
