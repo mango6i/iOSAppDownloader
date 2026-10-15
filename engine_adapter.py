@@ -94,12 +94,55 @@ def hidden_process_flags():
     return {"startupinfo": startup, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
+def process_is_running(pid):
+    """A read-only PID check; never use os.kill(pid, 0) on Windows."""
+    if pid == os.getpid():
+        return True
+    if not 0 < pid <= 0xFFFFFFFF:
+        return True
+    if os.name == "nt":
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            # Access denied and unknown errors are not proof that a process died.
+            return ctypes.get_last_error() != 87
+        try:
+            code = wintypes.DWORD()
+            return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def path_is_link(path):
+    # FILE_ATTRIBUTE_REPARSE_POINT also covers Windows junctions on Python
+    # versions without pathlib.Path.is_junction().
+    if path.is_symlink():
+        return True
+    try:
+        return bool(getattr(path.lstat(), "st_file_attributes", 0) & 0x400)
+    except FileNotFoundError:
+        return False
+
+
 class EngineSession:
     """Per-run credentials, persistent non-secret assets, cancellable children."""
     def __init__(self, data_root, seed_root="", frozen_root=""):
         self.root = Path(data_root).resolve()
         self.sessions = self.root / "sessions"
         self.sessions.mkdir(parents=True, exist_ok=True)
+        self._clear_stale_sessions()
         self.home = Path(tempfile.mkdtemp(prefix="run-%s-" % os.getpid(), dir=self.sessions))
         self.cache = self.root / "engine-cache"
         self.seed_root = Path(seed_root) if seed_root else None
@@ -111,6 +154,22 @@ class EngineSession:
         self._processes = set()
         self._seeded = False
         self._closed = False
+
+    def _clear_stale_sessions(self):
+        # Remove only our dead-process account directories. Never follow links,
+        # remove another running instance, or touch the persistent asset cache.
+        for candidate in self.sessions.iterdir():
+            match = re.fullmatch(r"run-([1-9][0-9]*)-[a-zA-Z0-9_-]+", candidate.name)
+            if not match or path_is_link(candidate):
+                continue
+            if candidate.resolve().parent != self.sessions.resolve() or not candidate.is_dir():
+                continue
+            if process_is_running(int(match.group(1))):
+                continue
+            try:
+                shutil.rmtree(candidate)
+            except OSError:
+                pass  # Locked leftovers can be retried at the next launch.
 
     def prepare(self):
         with self._prepare_lock:
@@ -232,6 +291,8 @@ class EngineSession:
         # This exact generated directory is ours. Never delete a user's .ipatool.
         if self.home.parent.resolve() != self.sessions.resolve() or not self.home.name.startswith("run-"):
             raise RuntimeError("Refusing to remove an unexpected session directory")
+        if path_is_link(self.home):
+            raise RuntimeError("Refusing to remove a linked session directory")
         with self._prepare_lock:
             if self.home.exists():
                 shutil.rmtree(self.home)

@@ -26,7 +26,7 @@
 
 ## 使用说明
 
-1. 双击 `iOSAppDownloader.exe`。
+1. 双击 `iOSAppDownloader_v1.0.7.exe`。
 2. 点击右上角设置按钮，登录 Apple ID；如果账号启用了双重认证，在验证码框输入 6 位验证码。
 3. 在“APP搜索”中输入应用名称并搜索，双击应用进入“历史版本”。
 4. 选择“官方版本列表”或“免登录查询”，勾选需要的版本后加入下载队列。
@@ -66,7 +66,8 @@
 - `requirements.txt`：Python 构建依赖
 - `engine_adapter.py`：官方引擎的接口适配、独立会话与进程取消
 - `ipatool/majd/`：官方 ipatool v2.7.0 许可与校验说明；构建前由 `prepare_engine.py` 从官方准备组件，EXE 成品已内置
-- `docs/releases/`：按版本归档的发布说明
+- `docs/releases/`：仅保留当前版本发布说明；历史变更统一查看 `CHANGELOG.md` 或 Git 历史
+- `docs/PROJECT_AUDIT.md`：当前代码检查范围、修复项和验证限制
 
 普通用户直接从 Releases 下载最新版 EXE；开发者可以查看源码并按自己的环境重新打包。
 

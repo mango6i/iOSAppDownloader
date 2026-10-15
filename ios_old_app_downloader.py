@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-iOS Old App Downloader v2.0
+iOS Old App Downloader
 
 Tabs:
   1. Search   - iTunes Search API
@@ -10,8 +10,8 @@ Tabs:
 
 Window frame is adapted from the desktop "IP Batch Converter" tool.
 """
-import sys, os, json, time, subprocess, io, re, base64, shutil, threading, ctypes, socket, ssl, tempfile, atexit, html, unicodedata
-import zipfile, plistlib, urllib.parse, urllib.request, urllib.error, uuid
+import sys, os, json, time, subprocess, io, re, base64, shutil, threading, ctypes, socket, ssl, atexit, html, unicodedata
+import zipfile, plistlib, urllib.parse, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from ctypes import windll
@@ -64,7 +64,7 @@ except Exception as _e:
                     "当前缺少 PyQt6 依赖。\n\n"
                     "你运行的是源码文件，请先安装依赖：\npip install PyQt6\n\n"
                     "如果你想要无需安装的版本，请使用打包好的 "
-                    "iOSAppDownloader_v1.0.5.exe。\n\n原始错误：%s" % _e)
+                    "iOSAppDownloader_v1.0.7.exe。\n\n原始错误：%s" % _e)
     sys.exit(1)
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -108,6 +108,7 @@ _DIAGNOSTIC_PATH = os.path.join(
 _ICON_CACHE = {}
 _ICON_CACHE_LOCK = threading.Lock()
 _ICON_CACHE_LIMIT = 256
+_ICON_CACHE_BYTE_LIMIT = 16 * 1024 * 1024
 
 
 def _diagnostic(event, detail=""):
@@ -623,10 +624,6 @@ def startup_login_message():
 
 # ─────────────────────────────────────────────
 # ─────────────────────────────────────────────
-def get_config_path():
-    return None
-
-CONFIG_PATH = get_config_path()
 BG_MODE = "dual"
 BG_DIRECTION = "diagonal"
 BG_EFFECTIVE_DIR = "diagonal"
@@ -668,20 +665,8 @@ def style_combo_clean(combo):
                              Qt.WindowType.NoDropShadowWindowHint)
             w.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-def save_config():
-    return
-
-def load_config():
-    return
-
-
 APPLE_ID_SAVE = ""
 COUNTRY_SAVE = "cn"
-
-LOGIN_MODE = "ipatool"
-LOGIN_MODES = (
-    ("ipatool", "官方 majd/ipatool v" + ENGINE_VERSION),
-)
 
 # ─────────────────────────────────────────────
 # ─────────────────────────────────────────────
@@ -1462,6 +1447,8 @@ class SettingsDialog(QDialog):
             self.status_card.setText(tr("status_logged_out"))
 
     def _do_login(self):
+        if self._downloads_prevent_auth_change():
+            return
         if self._login_busy or self._closing:
             return
         global APPLE_ID_SAVE
@@ -1479,7 +1466,6 @@ class SettingsDialog(QDialog):
                                icon_type="warning").exec()
             return
         APPLE_ID_SAVE = email
-        save_config()
         self._pending_pwd = pwd
         self._run_login(email, pwd)
 
@@ -1666,6 +1652,8 @@ class SettingsDialog(QDialog):
         self._run_login(email, pwd, code)
 
     def _do_logout(self):
+        if self._downloads_prevent_auth_change():
+            return
         if getattr(self, "_logout_busy", False):
             return
         if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
@@ -1713,6 +1701,16 @@ class SettingsDialog(QDialog):
                                        (rc, (out or "")[-400:]),
                                icon_type="info").exec()
         self._refresh_status()
+
+    def _downloads_prevent_auth_change(self):
+        parent = self.parent()
+        if parent is not None and getattr(parent, "_download_workers", None):
+            MacStyleMessageBox(self, title=localized("下载正在运行", "Downloads are running"),
+                               message=localized("请先暂停或结束下载，再重新登录或注销，避免清理正在使用的账号凭据。",
+                                                 "Pause or finish downloads before signing in again or signing out, so active credentials are not removed."),
+                               icon_type="info").exec()
+            return True
+        return False
 
     def _open_dir(self):
         try:
@@ -1764,10 +1762,23 @@ class SettingsDialog(QDialog):
         self.diag_hint.setText(localized("正在检测 Apple 各端点，约需十几秒…",
                                          "Checking Apple endpoints; this may take a few seconds..."))
         self._diag_thread = NetworkDiagWorker()
-        self._diag_thread.done.connect(self._on_network_diag_done)
-        self._diag_thread.start()
+        worker = self._diag_thread
+        self._threads.append(worker)
+        _ACTIVE_TOOL_WORKERS.add(worker)
+        def finished():
+            if worker in self._threads:
+                self._threads.remove(worker)
+            _ACTIVE_TOOL_WORKERS.discard(worker)
+            if self._diag_thread is worker:
+                self._diag_thread = None
+            worker.deleteLater()
+        worker.done.connect(self._on_network_diag_done)
+        worker.finished.connect(finished)
+        worker.start()
 
     def _on_network_diag_done(self, results):
+        if self._closing:
+            return
         self.diag_btn.setEnabled(True)
         self.diag_btn.setText(tr("start_diag"))
         self.diag_hint.setText(tr("diag_hint"))
@@ -1854,12 +1865,26 @@ def _http_route_candidates():
     return routes or [""]
 
 
-def _http_get_bytes(url, timeout=25):
-    """"""
+class RequestCancelled(InterruptedError):
+    """An intentionally stopped search/history request, not a network error."""
+
+
+def _check_request_cancelled(cancel):
+    if cancel is not None and cancel.is_set():
+        raise RequestCancelled("request cancelled")
+
+
+def _http_get_bytes(url, timeout=25, cancel=None, max_bytes=8 * 1024 * 1024):
+    """Bound the complete retry/read budget and the response allocation."""
     last_error = None
+    deadline = time.monotonic() + timeout
     routes = _http_route_candidates()
     for route_index, proxy in enumerate(routes):
         for attempt in range(2):
+            _check_request_cancelled(cancel)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("request timeout")
             try:
                 req = urllib.request.Request(
                     url,
@@ -1870,55 +1895,103 @@ def _http_get_bytes(url, timeout=25):
                         "Connection": "close",
                     })
                 opener = _build_opener(proxy)
-                with opener.open(req, timeout=timeout) as response:
-                    data = response.read()
+                with opener.open(req, timeout=min(5, remaining)) as response:
+                    chunks, received = [], 0
+                    read_chunk = getattr(response, "read1", response.read)
+                    while True:
+                        _check_request_cancelled(cancel)
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("request timeout")
+                        chunk = read_chunk(min(65536, max_bytes + 1 - received))
+                        if not chunk:
+                            break
+                        received += len(chunk)
+                        if received > max_bytes:
+                            raise ValueError("response exceeds size limit")
+                        chunks.append(chunk)
+                    data = b"".join(chunks)
                 if not data:
                     raise urllib.error.URLError("Apple 返回空响应")
                 return data
+            except RequestCancelled:
+                raise
             except (urllib.error.URLError, urllib.error.HTTPError, ssl.SSLError,
                     TimeoutError, OSError, ValueError) as exc:
                 last_error = exc
                 if attempt == 0:
-                    time.sleep(0.35)
+                    if cancel is not None:
+                        cancel.wait(min(0.35, max(0, deadline - time.monotonic())))
+                    else:
+                        time.sleep(min(0.35, max(0, deadline - time.monotonic())))
         if route_index + 1 < len(routes):
-            time.sleep(0.45)
+            if cancel is not None:
+                cancel.wait(min(0.45, max(0, deadline - time.monotonic())))
+            else:
+                time.sleep(min(0.45, max(0, deadline - time.monotonic())))
     if last_error is not None:
         raise last_error
     raise urllib.error.URLError("Apple 接口没有可用线路")
 
 
-def _get_cached_icon(url):
+def _get_cached_icon(url, cancel=None):
     """Fetch a search result icon once and reuse it across repeated searches."""
     address = str(url or "").strip()
     if not address:
         return None
     with _ICON_CACHE_LOCK:
         cached = _ICON_CACHE.get(address)
+        if cached is not None:
+            _ICON_CACHE.pop(address)
+            _ICON_CACHE[address] = cached
     if cached is not None:
         return cached
     try:
-        data = _http_get_bytes(address, timeout=15)
+        data = _http_get_bytes(address, timeout=15, cancel=cancel, max_bytes=2 * 1024 * 1024)
     except Exception:
         return None
     if not data:
         return None
     with _ICON_CACHE_LOCK:
-        if len(_ICON_CACHE) >= _ICON_CACHE_LIMIT:
+        if len(data) > _ICON_CACHE_BYTE_LIMIT:
+            return data
+        _ICON_CACHE.pop(address, None)
+        while _ICON_CACHE and (len(_ICON_CACHE) >= _ICON_CACHE_LIMIT or
+                               sum(map(len, _ICON_CACHE.values())) + len(data) > _ICON_CACHE_BYTE_LIMIT):
             _ICON_CACHE.pop(next(iter(_ICON_CACHE)))
         _ICON_CACHE[address] = data
     return data
 
 
-def _http_get_json(url, timeout=25):
-    data = _http_get_bytes(url, timeout=timeout)
+def _http_get_json(url, timeout=25, cancel=None):
+    data = _http_get_bytes(url, timeout=timeout, cancel=cancel)
     try:
         return json.loads(data.decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise urllib.error.URLError("Apple 返回的搜索数据无法解析：%s" % exc)
 
-def safe_filename(name, version, app_id):
-    keep = "".join(c for c in name if c.isalnum() or c in "._-")
-    return (keep + "_" + version + ".ipa") if keep else ("app_%s_%s.ipa" % (app_id, version))
+def safe_filename(name, version, app_id, version_id=""):
+    def component(value, limit, fallback):
+        value = unicodedata.normalize("NFC", str(value or ""))
+        cleaned = "".join(c for c in value if c.isalnum() or c in "._-").strip(" .")
+        return cleaned[:limit].rstrip(" .") or fallback
+    # IDs keep identically named apps and versions with missing labels distinct.
+    return "%s_%s_%s_%s.ipa" % (
+        component(name, 70, "app"), component(version, 35, "unknown"),
+        component(app_id, 24, "app"), component(version_id, 24, "version"))
+
+
+def _is_valid_ipa(path, bundle_identifier=""):
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = next((entry for entry in archive.infolist()
+                         if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", entry.filename)), None)
+            if info is None or info.file_size > 1024 * 1024:
+                return False
+            metadata = plistlib.loads(archive.read(info))
+            identifier = metadata.get("CFBundleIdentifier") if isinstance(metadata, dict) else None
+            return bool(identifier) and (not bundle_identifier or identifier == bundle_identifier)
+    except Exception:
+        return False
 
 def format_size(b):
     if not b:
@@ -1966,7 +2039,7 @@ def format_duration(seconds):
         return "%02d:%02d:%02d" % (hours, minutes, seconds)
     return "%02d:%02d" % (minutes, seconds)
 
-def api_search_apps(keyword, country="cn", limit=50):
+def api_search_apps(keyword, country="cn", limit=50, cancel=None):
     """"""
     query = urllib.parse.urlencode({
         "term": keyword,
@@ -1975,7 +2048,7 @@ def api_search_apps(keyword, country="cn", limit=50):
         "limit": int(limit or 50),
     })
     url = "https://itunes.apple.com/search?%s" % query
-    d = _http_get_json(url, timeout=18)
+    d = _http_get_json(url, timeout=18, cancel=cancel)
     out = []
     for r in d.get("results", []):
         raw_price = r.get("price")
@@ -2005,15 +2078,26 @@ def api_search_apps(keyword, country="cn", limit=50):
         })
     return out
 
-def api_fetch_history_local(app_id):
+def api_fetch_history_local(app_id, cancel=None):
     """"""
     out = []
+    deadline = time.monotonic() + 45
     for page in range(1, 61):
+        _check_request_cancelled(cancel)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if out:
+                break
+            raise TimeoutError("history lookup timeout")
         try:
             url = "https://apis.bilin.eu.org/history/%s?page=%d" % (app_id, page)
-            d = _http_get_json(url)
+            d = _http_get_json(url, timeout=min(15, remaining), cancel=cancel)
+        except RequestCancelled:
+            raise
         except Exception:
-            break
+            if out:
+                break
+            raise
         if d.get("code") != 200:
             break
         rows = d.get("data") or []
@@ -2021,13 +2105,18 @@ def api_fetch_history_local(app_id):
             break
         for it in rows:
             bv = it.get("bundle_version")
-            if not bv:
+            identifier = str(it.get("external_identifier") or "")
+            if not bv or not identifier.isascii() or not identifier.isdigit() or int(identifier) <= 0:
                 continue
+            try:
+                size = max(0, int(it.get("size") or 0))
+            except (ValueError, TypeError, OverflowError):
+                size = 0
             out.append({
                 "version": str(bv),
-                "external_id": it.get("external_identifier", 0),
+                "external_id": identifier,
                 "date": (it.get("created_at", "") or "")[:19].replace("T", " "),
-                "size": it.get("size", 0),
+                "size": size,
             })
         total = d.get("total")
         if total and len(out) >= total:
@@ -2047,8 +2136,8 @@ def _history_local_fallback_notice():
         "Apple did not return the official version list for this account, so the app automatically used Login-free lookup. These version IDs can still be selected for download; if downloading fails, the Apple ID may not own the app or may use a different storefront.")
 
 
-def _fetch_history_local_fallback(app_id):
-    rows = api_fetch_history_local(app_id)
+def _fetch_history_local_fallback(app_id, cancel=None):
+    rows = api_fetch_history_local(app_id, cancel=cancel)
     if rows:
         rows[0]["_notice"] = _history_local_fallback_notice()
     return rows
@@ -2065,13 +2154,15 @@ def _official_version_list_args(app_id, bundle_identifier=""):
     return args
 
 
-def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=False):
+def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=False, cancel=None):
     """"""
     if not IPATOOL_PATH:
         raise RuntimeError("软件内部查询组件不可用，请重新下载完整的软件")
     bundle_identifier = str(bundle_identifier or "").strip()
     version_args = _official_version_list_args(app_id, bundle_identifier)
-    rc, out = run_tool(version_args, timeout=90)
+    _check_request_cancelled(cancel)
+    rc, out = run_tool(version_args, timeout=90, cancel=cancel)
+    _check_request_cancelled(cancel)
 
     # Apple only exposes the official song/version list after the signed-in
     # account has obtained a license for the app.  For a free app that has
@@ -2085,14 +2176,16 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
             "purchase", "--bundle-identifier", bundle_identifier,
             "--format", "json", "--non-interactive",
         ]
-        purchase_rc, purchase_out = run_tool(purchase_args, timeout=90)
+        purchase_rc, purchase_out = run_tool(purchase_args, timeout=90, cancel=cancel)
+        _check_request_cancelled(cancel)
         _diagnostic("history_license_result", "rc=%s bundle=%s" % (
             purchase_rc, bundle_identifier))
-        retry_rc, retry_out = run_tool(version_args, timeout=90)
+        retry_rc, retry_out = run_tool(version_args, timeout=90, cancel=cancel)
+        _check_request_cancelled(cancel)
         if retry_rc == 0:
             rc, out = retry_rc, retry_out
         elif _is_empty_song_list_response(retry_out):
-            return _fetch_history_local_fallback(app_id)
+            return _fetch_history_local_fallback(app_id, cancel=cancel)
         else:
             detail = _friendly_auth_error(retry_out)
             if purchase_rc != 0:
@@ -2104,7 +2197,7 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
                 "The app tried to obtain the free license, but Apple still did not return an official version list. Make sure the Apple ID storefront matches the selected search region, or use Login-free lookup.\n%s") % detail)
     if rc != 0:
         if _is_empty_song_list_response(out):
-            return _fetch_history_local_fallback(app_id)
+            return _fetch_history_local_fallback(app_id, cancel=cancel)
         raise RuntimeError(_friendly_auth_error(out) or "历史版本查询失败")
     rows = _engine_version_rows(out)
     if not rows:
@@ -2114,7 +2207,9 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
     # 通常不返回可读版本号、文件大小和日期。用公开版本资料按同一官方 ID 补齐；
     # 即使资料源暂时不可用，也绝不再把版本 ID 冒充为版本号。
     try:
-        metadata_rows = api_fetch_history_local(app_id)
+        metadata_rows = api_fetch_history_local(app_id, cancel=cancel)
+    except RequestCancelled:
+        raise
     except Exception:
         metadata_rows = []
     metadata_by_id = {}
@@ -2137,13 +2232,14 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
     deadline = time.monotonic() + 15
     missing = [row for row in rows if not row["version"]][:3]
     for row in missing:
+        _check_request_cancelled(cancel)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         metadata_args = ["get-version-metadata", "--app-id", str(app_id),
                          "--external-version-id", row["external_id"],
                          "--platform", "iphone", "--format", "json", "--non-interactive"]
-        meta_rc, meta_out = run_tool(metadata_args, timeout=min(5, remaining))
+        meta_rc, meta_out = run_tool(metadata_args, timeout=min(5, remaining), cancel=cancel)
         if meta_rc != 0:
             break
         for metadata in _json_records(meta_out):
@@ -2153,142 +2249,7 @@ def api_fetch_history_apple(app_id, bundle_identifier="", allow_auto_purchase=Fa
                 row["date"] = str(metadata.get("releaseDate") or "")[:19].replace("T", " ")
     return rows
 
-# ---------------------------------------------------------------- 官网会话凭证
-
-CONFIGURATOR_UA = "Configurator/2.0 (Macintosh; OS X 10.12.6; 16G29) AppleWebKit/2603.3.8"
-
-STORE_DOWNLOAD_PATH = "/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct"
-STORE_PURCHASE_PATH = "/WebObjects/MZBuy.woa/wa/buyProduct"
-
-_TOKEN_COOKIE_PREFIX = ("mz_at_ssl", "mz_at0", "mt-tkn", "mz_at")
-_DSID_COOKIE_NAMES = ("dssid", "dssid2")
-_INFO_COOKIE_PREFIX = ("myacinfo",)
-_POD_COOKIE_NAMES = ("itspod", "pod")
-
-
-class StoreSession(object):
-    """"""
-
-    def __init__(self, dsid="", token="", storefront="", pod="", email="", name=""):
-        self.dsid = str(dsid or "").strip()
-        self.token = str(token or "").strip()
-        self.storefront = str(storefront or "").strip()
-        self.pod = str(pod or "").strip()
-        self.email = str(email or "").strip()
-        self.name = str(name or "").strip()
-
-    @property
-    def ok(self):
-        return self.dsid.isdigit() and len(self.dsid) >= 6
-
-    @property
-    def label(self):
-        who = self.email or self.name or "Apple ID"
-        return "%s（DSID %s）" % (who, self.dsid)
-
-    def summary(self):
-        return ("账号：%s<br>DSID：%s<br>会话令牌：%s<br>商店分区：%s<br>服务节点：%s"
-                % (_ht(self.email or self.name or "Apple ID"),
-                   _ht(self.dsid or "-"),
-                   "已获取" if self.token else "未获取",
-                   _ht(self.storefront or "-"),
-                   _ht(("p" + self.pod) if self.pod else "-")))
-
-
-def _plist_find(node, key):
-    """"""
-    if isinstance(node, dict):
-        if key in node:
-            return node[key]
-        for value in node.values():
-            found = _plist_find(value, key)
-            if found is not None:
-                return found
-    elif isinstance(node, (list, tuple)):
-        for value in node:
-            found = _plist_find(value, key)
-            if found is not None:
-                return found
-    return None
-
-
-def _decode_account_cookie(value):
-    """"""
-    try:
-        import base64
-        import plistlib
-        raw = base64.b64decode(value + "=" * (-len(value) % 4))
-        data = plistlib.loads(raw)
-    except Exception:
-        return "", ""
-    dsid = _plist_find(data, "dsid") or _plist_find(data, "DSID")
-    apple_id = _plist_find(data, "appleId") or _plist_find(data, "appleID")
-    name = _plist_find(data, "fullName") or _plist_find(data, "name")
-    return str(dsid or ""), str(apple_id or ""), str(name or "")
-
-
-def parse_store_cookies(cookies):
-    """"""
-    token = ""
-    dsid = ""
-    pod = ""
-    email = ""
-    name = ""
-
-    for item in cookies:
-        try:
-            cname, cvalue, _cdomain = item
-        except Exception:
-            continue
-        low = str(cname or "").strip().lower()
-        val = str(cvalue or "").strip()
-        if not low or not val:
-            continue
-
-        if not token:
-            for prefix in _TOKEN_COOKIE_PREFIX:
-                if low == prefix:
-                    token = val
-                    break
-                if low.startswith(prefix + "-"):
-                    token = val
-                    tail = low[len(prefix) + 1:]
-                    if tail.isdigit() and not dsid:
-                        dsid = tail
-                    break
-
-        if not dsid and low in _DSID_COOKIE_NAMES:
-            if val.isdigit():
-                dsid = val
-
-        if low.startswith(_INFO_COOKIE_PREFIX):
-            got_dsid, got_mail, got_name = _decode_account_cookie(val)
-            if got_dsid and not dsid:
-                dsid = got_dsid
-            if got_mail and not email:
-                email = got_mail
-            if got_name and not name:
-                name = got_name
-
-        if not pod and low in _POD_COOKIE_NAMES:
-            if val.isdigit():
-                pod = val
-
-    return StoreSession(dsid=dsid, token=token, pod=pod, email=email, name=name)
-
-
-def _machine_guid():
-    """"""
-    try:
-        import uuid
-        node = uuid.getnode()
-        if node and node != 0xFFFFFFFFFFFF:
-            mac = "%012X" % node
-            return mac.upper()
-    except Exception:
-        pass
-    return "0000000000000000"
-
+# ---------------------------------------------------------------- HTTP proxy handling
 
 def _build_opener(proxy=""):
     """"""
@@ -2299,307 +2260,6 @@ def _build_opener(proxy=""):
     else:
         handlers.append(urllib.request.ProxyHandler({}))
     return urllib.request.build_opener(*handlers)
-
-
-def _http_post_bytes(url, body, headers, proxy="", timeout=60):
-    """"""
-    opener = _build_opener(proxy)
-    req = urllib.request.Request(url, data=body, headers=headers)
-    with opener.open(req, timeout=timeout) as resp:
-        return resp.read()
-
-
-def _store_hosts(session):
-    """"""
-    hosts = []
-    if session.pod and session.pod.isdigit():
-        hosts.append("https://p%s-buy.itunes.apple.com" % session.pod)
-    hosts.append("https://buy.itunes.apple.com")
-    for index in range(1, 6):
-        host = "https://p%d-buy.itunes.apple.com" % index
-        if host not in hosts:
-            hosts.append(host)
-    return hosts
-
-
-def store_purchase(session, app_id, proxy="", timeout=60):
-    """"""
-    guid = _machine_guid()
-    body = urllib.parse.urlencode({
-        "guid": guid,
-        "salableAdamId": str(app_id),
-        "productType": "C",
-        "pricingParameters": "STDQ",
-    }).encode("utf-8")
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": CONFIGURATOR_UA,
-        "iCloud-DSID": session.dsid,
-        "X-Dsid": session.dsid,
-    }
-    if session.token:
-        headers["X-Token"] = session.token
-    if session.storefront:
-        headers["X-Apple-Store-Front"] = session.storefront
-    last = ""
-    for host in _store_hosts(session):
-        url = host + STORE_PURCHASE_PATH + "?guid=" + guid
-        try:
-            data = _http_post_bytes(url, body, headers, proxy, timeout)
-        except Exception as exc:
-            last = str(exc)
-            continue
-        if not data:
-            last = "空响应"
-            continue
-        return True, data
-    return False, last or "无法连接 App Store 服务"
-
-
-def store_download_product(session, app_id, external_version_id, proxy="", timeout=90):
-    """"""
-    guid = _machine_guid()
-    body = urllib.parse.urlencode({
-        "creditDisplay": "",
-        "guid": guid,
-        "salableAdamId": str(app_id),
-        "appExtVrsId": str(external_version_id or "0"),
-    }).encode("utf-8")
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": CONFIGURATOR_UA,
-        "iCloud-DSID": session.dsid,
-        "X-Dsid": session.dsid,
-    }
-    if session.token:
-        headers["X-Token"] = session.token
-    if session.storefront:
-        headers["X-Apple-Store-Front"] = session.storefront
-
-    errors = []
-    for host in _store_hosts(session):
-        url = host + STORE_DOWNLOAD_PATH + "?guid=" + guid
-        try:
-            data = _http_post_bytes(url, body, headers, proxy, timeout)
-        except Exception as exc:
-            errors.append("%s -> %s" % (host.split("//")[-1], str(exc)[:80]))
-            continue
-        if not data:
-            errors.append("%s -> 空响应" % host.split("//")[-1])
-            continue
-        try:
-            import plistlib
-            pl = plistlib.loads(data)
-        except Exception:
-            errors.append("%s -> 响应不是有效数据" % host.split("//")[-1])
-            continue
-
-        failure = _plist_find(pl, "failureType")
-        message = _plist_find(pl, "customerMessage")
-        if failure and str(failure).strip():
-            errors.append("%s -> %s" % (host.split("//")[-1], str(message or failure)[:80]))
-            continue
-
-        ipa_url = _plist_find(pl, "software-package")
-        sinfs = _plist_find(pl, "sinfs") or []
-        metadata = _plist_find(pl, "metadata")
-        if not ipa_url:
-            errors.append("%s -> 未返回下载地址" % host.split("//")[-1])
-            continue
-        return {
-            "ipa_url": str(ipa_url),
-            "sinfs": sinfs if isinstance(sinfs, (list, tuple)) else ([sinfs] if sinfs else []),
-            "metadata": metadata,
-            "storefront": session.storefront,
-        }, None
-    return None, "；".join(errors[:3]) or "未能取得下载地址"
-
-
-def session_from_auth_info(out):
-    """"""
-    for record in _json_records(out or ""):
-        if not isinstance(record, dict):
-            continue
-        dsid = str(record.get("directory_services_id") or "").strip()
-        if not dsid or not dsid.isdigit():
-            continue
-        return StoreSession(
-            dsid=dsid,
-            token=str(record.get("password_token") or "").strip(),
-            storefront=str(record.get("store_front") or "").strip(),
-            pod=str(record.get("pod") or "").strip(),
-            email=str(record.get("email") or "").strip(),
-            name=str(record.get("name") or "").strip(),
-        )
-    return None
-
-
-def _find_app_dir(zf):
-    for info in zf.infolist():
-        name = info.filename
-        if not name.startswith("Payload/"):
-            continue
-        rest = name[len("Payload/"):]
-        if "/" not in rest:
-            continue
-        app_name, file_name = rest.split("/", 1)
-        if app_name.endswith(".app") and file_name == "Info.plist":
-            return "Payload/%s/" % app_name
-    return ""
-
-
-def _read_plist_member(zf, path):
-    try:
-        with zf.open(path) as fh:
-            return plistlib.loads(fh.read())
-    except Exception:
-        return None
-
-
-def _sinf_bytes(item):
-    if isinstance(item, bytes):
-        return item
-    if isinstance(item, dict):
-        for key in ("sinf", "Sinf", "data"):
-            value = item.get(key)
-            if isinstance(value, bytes):
-                return value
-    return b""
-
-
-def patch_ipa(src, dest, sinfs, metadata, email):
-    """"""
-    with zipfile.ZipFile(src, "r") as zin:
-        app_dir = _find_app_dir(zin)
-        manifest = {}
-        if app_dir:
-            manifest = _read_plist_member(zin, app_dir + "SC_Info/Manifest.plist") or {}
-        sinf_paths = [str(x) for x in (manifest.get("SinfPaths") or [])]
-
-        if not sinf_paths and app_dir:
-            info = _read_plist_member(zin, app_dir + "Info.plist") or {}
-            exe = str(info.get("CFBundleExecutable") or "").strip()
-            if exe:
-                sinf_paths = ["SC_Info/%s.sinf" % exe]
-
-        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zout:
-            for info in zin.infolist():
-                zi = zipfile.ZipInfo(info.filename, date_time=info.date_time)
-                zi.compress_type = info.compress_type
-                zi.external_attr = info.external_attr
-                zi.internal_attr = info.internal_attr
-                zi.create_system = info.create_system
-                if info.flag_bits & 0x800:
-                    zi.flag_bits |= 0x800
-                try:
-                    payload = zin.read(info.filename)
-                except Exception:
-                    payload = b""
-                zout.writestr(zi, payload)
-
-            meta = dict(metadata) if isinstance(metadata, dict) else {}
-            meta["apple-id"] = email or ""
-            meta["userName"] = email or ""
-            try:
-                buf = plistlib.dumps(meta, fmt=plistlib.FMT_BINARY)
-            except Exception:
-                buf = plistlib.dumps({"apple-id": email or "", "userName": email or ""},
-                                      fmt=plistlib.FMT_BINARY)
-            zi = zipfile.ZipInfo("iTunesMetadata.plist")
-            zi.compress_type = zipfile.ZIP_STORED
-            zi.external_attr = 0o644 << 16
-            zout.writestr(zi, buf)
-
-            for idx, sinf in enumerate(sinfs or []):
-                data = _sinf_bytes(sinf)
-                if not data:
-                    continue
-                if idx < len(sinf_paths):
-                    path = (app_dir + sinf_paths[idx]) if app_dir else sinf_paths[idx]
-                else:
-                    path = (app_dir + "SC_Info/%d.sinf" % idx) if app_dir else "SC_Info/%d.sinf" % idx
-                zi = zipfile.ZipInfo(path)
-                zi.compress_type = zipfile.ZIP_STORED
-                zi.external_attr = 0o644 << 16
-                zout.writestr(zi, data)
-    return True
-
-
-def store_download_ipa(session, app_id, version_id, dest, proxy="",
-                       progress_cb=None, timeout=120):
-    """"""
-    info, err = store_download_product(session, app_id, version_id, proxy, timeout)
-    if not info:
-        return False, err or "未能取得下载地址"
-
-    tmp = dest + ".tmp"
-    url = info["ipa_url"]
-    written = [0]
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        opener = _build_opener(proxy)
-        req = urllib.request.Request(
-            url, headers={"User-Agent": CONFIGURATOR_UA, "Accept": "*/*"})
-        with opener.open(req, timeout=timeout) as resp:
-            total = 0
-            try:
-                total = int(resp.headers.get("Content-Length") or 0)
-            except Exception:
-                total = 0
-            with open(tmp, "wb") as fh:
-                while True:
-                    chunk = resp.read(262144)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
-                    written[0] += len(chunk)
-                    if progress_cb and total:
-                        try:
-                            progress_cb(min(99, int(written[0] * 100 / total)))
-                        except Exception:
-                            pass
-    except Exception as exc:
-        try:
-            if os.path.isfile(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-        return False, "下载 IPA 失败：%s" % str(exc)[:120]
-
-    try:
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        patch_ipa(tmp, dest, info.get("sinfs") or [], info.get("metadata") or {},
-                  session.email or "")
-    except Exception as exc:
-        try:
-            if os.path.isfile(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-        return False, "写入签名失败：%s" % str(exc)[:120]
-
-    try:
-        if os.path.isfile(tmp):
-            os.remove(tmp)
-    except Exception:
-        pass
-    if progress_cb:
-        try:
-            progress_cb(100)
-        except Exception:
-            pass
-    return True, dest
-
-
-def _no_window_flags():
-    if os.name != "nt":
-        return {}
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = 0
-    return {"startupinfo": si, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def _windows_system_proxy():
@@ -2919,13 +2579,15 @@ _DIAG_TARGETS = (
 )
 
 
-def diagnose_apple_network(proxy_url=""):
+def diagnose_apple_network(proxy_url="", cancel=None):
     results = []
     for label, host, path, method, body in _DIAG_TARGETS:
+        if cancel is not None and cancel.is_set():
+            break
         started = time.time()
         try:
             status, headers = _diag_request(host, path, proxy_url,
-                                            method=method, body=body, timeout=15)
+                                            method=method, body=body, timeout=5)
             results.append({
                 "label": label, "host": host, "status": status,
                 "ms": int((time.time() - started) * 1000),
@@ -3229,15 +2891,23 @@ class ToolWorker(QThread):
 class NetworkDiagWorker(QThread):
     done = pyqtSignal(object)
 
+    def __init__(self):
+        super().__init__()
+        self._cancel = threading.Event()
+
+    def stop(self):
+        self._cancel.set()
+
     def run(self):
         try:
-            results = diagnose_apple_network(_resolve_proxy())
+            results = diagnose_apple_network(_resolve_proxy(), cancel=self._cancel)
         except Exception as exc:
             results = [{
                 "label": "诊断异常", "host": "", "status": 0, "ms": 0,
                 "location": "", "error": str(exc),
             }]
-        self.done.emit(results)
+        if not self._cancel.is_set():
+            self.done.emit(results)
 
 
 class SearchWorker(QThread):
@@ -3247,16 +2917,16 @@ class SearchWorker(QThread):
         self.country = country
         self.limit = limit
         self.signals = WorkerSignals()
-        self._stop = False
+        self._cancel = threading.Event()
 
     def stop(self):
-        self._stop = True
+        self._cancel.set()
 
     def run(self):
         try:
             self.signals.progress.emit(0, 1)
-            apps = api_search_apps(self.keyword, self.country, limit=self.limit)
-            if self._stop:
+            apps = api_search_apps(self.keyword, self.country, limit=self.limit, cancel=self._cancel)
+            if self._cancel.is_set():
                 return
             targets = [a for a in apps if a.get("icon_100")]
             for a in apps:
@@ -3266,21 +2936,24 @@ class SearchWorker(QThread):
                         max_workers=min(8, len(targets)),
                         thread_name_prefix="app-icon") as pool:
                     futures = {
-                        pool.submit(_get_cached_icon, a.get("icon_100")): a
+                        pool.submit(_get_cached_icon, a.get("icon_100"), self._cancel): a
                         for a in targets
                     }
                     for future in as_completed(futures):
-                        if self._stop:
+                        if self._cancel.is_set():
+                            for pending in futures:
+                                pending.cancel()
                             break
                         app = futures[future]
                         try:
                             app["icon_bytes"] = future.result()
                         except Exception:
                             app["icon_bytes"] = None
-            if not self._stop:
+            if not self._cancel.is_set():
                 self.signals.data.emit(apps)
         except Exception as e:
-            self.signals.error.emit(str(e))
+            if not self._cancel.is_set():
+                self.signals.error.emit(str(e))
         finally:
             self.signals.finished.emit()
 
@@ -3293,22 +2966,23 @@ class HistoryWorker(QThread):
         self.bundle_identifier = bundle_identifier
         self.allow_auto_purchase = allow_auto_purchase
         self.signals = WorkerSignals()
-        self._stop = False
+        self._cancel = threading.Event()
 
     def stop(self):
-        self._stop = True
+        self._cancel.set()
 
     def run(self):
         try:
             if self.mode == "apple":
                 rows = api_fetch_history_apple(
-                    self.app_id, self.bundle_identifier, self.allow_auto_purchase)
+                    self.app_id, self.bundle_identifier, self.allow_auto_purchase, cancel=self._cancel)
             else:
-                rows = api_fetch_history_local(self.app_id)
-            if not self._stop:
+                rows = api_fetch_history_local(self.app_id, cancel=self._cancel)
+            if not self._cancel.is_set():
                 self.signals.data.emit(rows)
         except Exception as e:
-            self.signals.error.emit(str(e))
+            if not self._cancel.is_set():
+                self.signals.error.emit(str(e))
         finally:
             self.signals.finished.emit()
 
@@ -3323,7 +2997,8 @@ class DownloadWorker(QThread):
         super().__init__()
         self.email = email
         self.task = task
-        self._stop = False
+        self._stop_requested = threading.Event()
+        self._proc_lock = threading.Lock()
         self._action = ""
         self._proc = None
         self._last_activity = time.time()
@@ -3337,15 +3012,17 @@ class DownloadWorker(QThread):
         self._stop_process()
 
     def _stop_process(self):
-        proc = self._proc
-        if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
+        self._stop_requested.set()
+        with self._proc_lock:
+            proc = self._proc
+            if proc and proc.poll() is None:
                 try:
-                    proc.kill()
+                    proc.terminate()
                 except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
 
     def run(self):
         q = self.task
@@ -3408,12 +3085,17 @@ class DownloadWorker(QThread):
         return 0
 
     def _stream(self, q, args):
+        if self._stop_requested.is_set():
+            return self._action or "cancelled", ""
         env = _ipatool_env(for_login=False)
         command = _ipatool_command(args)
-        proc = _ENGINE_SESSION.launch(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, env=env, text=True,
-                                encoding="utf-8", errors="replace", bufsize=1)
-        self._proc = proc
+        with self._proc_lock:
+            if self._stop_requested.is_set():
+                return self._action or "cancelled", ""
+            proc = _ENGINE_SESSION.launch(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, env=env, text=True,
+                                    encoding="utf-8", errors="replace", bufsize=1)
+            self._proc = proc
         self._last_activity = time.time()
         stall_timeout = 600
         monitor_stop = threading.Event()
@@ -3454,25 +3136,38 @@ class DownloadWorker(QThread):
 
         monitor = threading.Thread(target=_monitor_file, daemon=True)
         monitor.start()
-        for raw in proc.stdout:
-            piece = _redact_engine_output(raw.strip())
-            if piece:
-                self._last_activity = time.time()
-                output_lines.append(piece)
-                if len(output_lines) > 80:
-                    del output_lines[:20]
-                m = re.search(r"(\d{1,3})\s*%", piece)
-                if m:
-                    self.progress_pct.emit(int(m.group(1)))
-                    continue
-                if not re.fullmatch(r"[\s\W]+", piece):
-                    self.progress.emit(piece)
-        proc.stdout.close()
-        rc = proc.wait()
-        monitor_stop.set()
-        monitor.join(timeout=2)
-        self._proc = None
-        ok = rc == 0 and os.path.exists(q["out"]) and os.path.getsize(q["out"]) > 1024
+        try:
+            for raw in proc.stdout:
+                piece = _redact_engine_output(raw.strip())
+                if piece:
+                    self._last_activity = time.time()
+                    output_lines.append(piece)
+                    if len(output_lines) > 80:
+                        del output_lines[:20]
+                    m = re.search(r"(\d{1,3})\s*%", piece)
+                    if m:
+                        self.progress_pct.emit(int(m.group(1)))
+                        continue
+                    if not re.fullmatch(r"[\s\W]+", piece):
+                        self.progress.emit(piece)
+            rc = proc.wait()
+        finally:
+            monitor_stop.set()
+            try:
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    proc.wait(timeout=5)
+            finally:
+                try:
+                    proc.stdout.close()
+                finally:
+                    monitor.join(timeout=2)
+                    with self._proc_lock:
+                        self._proc = None
+        ok = rc == 0 and _is_valid_ipa(q["out"], q.get("bundle", ""))
         if ok:
             self.progress.emit("[OK] %s" % q["out"])
             self.progress_pct.emit(100)
@@ -3496,6 +3191,9 @@ class DownloadWorker(QThread):
         elif self._action == "timeout":
             reason = localized("下载长时间没有收到数据，请检查网络或代理后继续。",
                                "No data was received for a long time. Check the network or proxy, then retry.")
+        elif rc == 0:
+            reason = localized("下载组件已结束，但文件不是有效的目标 IPA，请重试。",
+                               "The component finished, but the file is not a valid IPA for this app. Retry the download.")
         else:
             reason = localized("下载失败（返回码 %s）。%s",
                                "Download failed (return code %s). %s") % (rc, output_lines[-1] if output_lines else "")
@@ -3638,12 +3336,33 @@ class TransparentMacWindow(QMainWindow):
         self.activateWindow()
 
     def _exit_app(self):
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True
+        for dialog in self.findChildren(SettingsDialog):
+            dialog.reject()
         self._stop_content_worker()
+        self._exit_workers = list(set(self._content_workers) | set(self._threads) |
+                                  set(_ACTIVE_TOOL_WORKERS) | set(self._download_workers.values()))
+        for worker in list(self._content_workers):
+            worker.stop()
         for worker in list(self._download_workers.values()):
             worker.cancel()
         if self.tray_icon:
             self.tray_icon.hide()
         _shutdown_engine()
+        self._finish_exit()
+
+    def _finish_exit(self):
+        # Never destroy a QThread still inside a network call. Cancellation is
+        # cooperative; keep the Qt loop alive until the last worker returns.
+        for worker in self._exit_workers:
+            try:
+                if worker.isRunning():
+                    QTimer.singleShot(100, self._finish_exit)
+                    return
+            except RuntimeError:
+                pass  # The finished callback already deleted this Qt object.
         QApplication.quit()
 
     def _stop_content_worker(self):
@@ -3676,7 +3395,6 @@ class TransparentMacWindow(QMainWindow):
         dlg = MacStyleMessageBox(self, title=tr("confirm_exit_title"), message=tr("confirm_exit_message"),
                                  icon_type="question", buttons=[tr("ok"), tr("cancel")])
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            save_config()
             self._exit_app()
         event.ignore()
 
@@ -3865,6 +3583,7 @@ class TransparentMacWindow(QMainWindow):
     # ═════════════════════════════════════════
     def _open_settings(self):
         """"""
+        self._stop_content_worker()
         dlg = SettingsDialog(self)
         dlg.exec()
         self._apply_language()
@@ -3876,6 +3595,8 @@ class TransparentMacWindow(QMainWindow):
         _ACTIVE_TOOL_WORKERS.add(w)
 
         def _slot(rc, out):
+            if getattr(self, "_closing", False):
+                return
             try:
                 callback(rc, out)
             except Exception as exc:
@@ -4439,6 +4160,7 @@ class TransparentMacWindow(QMainWindow):
         global APPLE_ID_SAVE
         self._pre_check_busy = False
         logged, _, who = _auth_result(rc, out)
+        self._on_login_status(rc, out)
 
         if not logged:
             MacStyleMessageBox(
@@ -4456,7 +4178,7 @@ class TransparentMacWindow(QMainWindow):
         self._launch_pending_downloads(self._download_email)
 
     def _launch_pending_downloads(self, email=""):
-        if not email:
+        if not email or getattr(self, "_closing", False) or not self.logged_in:
             return
         while len(self._download_workers) < self._download_max_parallel:
             task = next((q for q in self.download_queue if q.get("status") == "queued"
@@ -4503,6 +4225,8 @@ class TransparentMacWindow(QMainWindow):
             return
         if self._download_workers.get(task_id) is worker:
             self._download_workers.pop(task_id, None)
+        if getattr(self, "_closing", False):
+            return
         task = next((q for q in self.download_queue if q["id"] == task_id), None)
         if task and task.pop("_remove_when_done", False):
             self.download_queue = [q for q in self.download_queue if q["id"] != task_id]
@@ -4590,7 +4314,7 @@ class TransparentMacWindow(QMainWindow):
                     q["error"] = ""
                     return True
                 return False
-        out = os.path.join(IPAS_DIR, safe_filename(d["name"], d["version"], d["app_id"]))
+        out = os.path.join(IPAS_DIR, safe_filename(d["name"], d["version"], d["app_id"], d["version_id"]))
         task_id = "%s:%s" % key
         downloaded = 0
         for path in (out + ".tmp", out + ".part", out):
@@ -4600,7 +4324,9 @@ class TransparentMacWindow(QMainWindow):
                     break
             except OSError:
                 pass
-        status = "completed" if os.path.isfile(out) and downloaded > 1024 else "queued"
+        status = "completed" if _is_valid_ipa(out, d.get("bundle", "")) else "queued"
+        if status == "completed":
+            downloaded = os.path.getsize(out)
         self.download_queue.append({
             "id": task_id,
             "app_id": d["app_id"], "bundle": d["bundle"], "version_id": d["version_id"],
@@ -5099,7 +4825,12 @@ class TransparentMacWindow(QMainWindow):
         for fn in os.listdir(IPAS_DIR):
             if fn.lower().endswith(".ipa"):
                 full = os.path.join(IPAS_DIR, fn)
-                st = os.stat(full)
+                try:
+                    if not os.path.isfile(full):
+                        continue
+                    st = os.stat(full)
+                except OSError:
+                    continue  # Another task or user may have removed it.
                 files.append((fn, st.st_size, st.st_mtime))
         files.sort(key=lambda x: x[2], reverse=True)
         for fn, size, mtime in files:
@@ -5198,7 +4929,8 @@ class TransparentMacWindow(QMainWindow):
         """"""
         if not os.path.isdir(IPAS_DIR):
             return
-        files = [os.path.join(IPAS_DIR, f) for f in os.listdir(IPAS_DIR) if f.lower().endswith(".ipa")]
+        files = [os.path.join(IPAS_DIR, f) for f in os.listdir(IPAS_DIR)
+                 if f.lower().endswith(".ipa") and os.path.isfile(os.path.join(IPAS_DIR, f))]
         if not files:
             MacStyleMessageBox(self, title=tr("choose_app_title"), message=tr("nothing_to_clear"),
                                icon_type="info").exec()
@@ -5284,7 +5016,6 @@ def main():
         sys.exit(_frozen_smoke_test(sys.argv[index + 1]))
     try:
         _clear_runtime_auth()
-        load_config()
         app = QApplication(sys.argv)
         try:
             from PyQt6.QtCore import QTranslator

@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 build/
 dist/
+baseline_build/
 _build_artifacts_trash/
 *.spec.bak
 

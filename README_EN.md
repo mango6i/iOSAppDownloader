@@ -26,7 +26,7 @@ A simple Windows tool for searching App Store apps, viewing older versions, and 
 
 ## Usage
 
-1. Double-click `iOSAppDownloader.exe`.
+1. Double-click `iOSAppDownloader_v1.0.7.exe`.
 2. Open Settings and sign in with an Apple ID. If two-factor authentication is enabled, enter the 6-digit code in the verification-code field.
 3. Search for an app in App Search and double-click it to open Version History.
 4. Choose “Official version list” or “Login-free lookup”, select versions, and add them to the download queue.
@@ -66,7 +66,8 @@ This repository contains the project source. Windows binaries are published only
 - `requirements.txt`: Python build dependencies
 - `engine_adapter.py`: official CLI adapter, isolated sessions and cancellation
 - `ipatool/majd/`: official ipatool v2.7.0 license/checksums; `prepare_engine.py` prepares the engine from its official release before source builds. Packaged EXEs already include it.
-- `docs/releases/`: release notes organized by version
+- `docs/releases/`: current-version release notes only; historical changes remain in `CHANGELOG.md` and Git history
+- `docs/PROJECT_AUDIT.md`: current audit scope, fixes and verification limits
 
 Download the latest EXE from Releases for normal use, or inspect the source and rebuild it in your own environment.
 

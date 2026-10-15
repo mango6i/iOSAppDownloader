@@ -1,5 +1,7 @@
 """Offline regression tests; never use a real Apple ID or make purchases."""
 import json
+import plistlib
+import zipfile
 import os
 from pathlib import Path
 import sys
@@ -7,7 +9,8 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock, MagicMock
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,6 +18,42 @@ from engine_adapter import EngineSession, auth_result, version_rows, redact_outp
 
 
 class AdapterTests(unittest.TestCase):
+    def test_engine_archive_rejects_a_changed_checksum(self):
+        from prepare_engine import unpack_verified
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            unpack_verified(b"not the official archive")
+
+    def test_failed_engine_preparation_preserves_existing_file(self):
+        from prepare_engine import prepare
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "ipatool" / "majd" / "ipatool.exe"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"existing file")
+            archive = Path(folder) / "bad.tar.gz"
+            archive.write_bytes(b"tampered archive")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                prepare(folder, archive)
+            self.assertEqual(target.read_bytes(), b"existing file")
+            self.assertFalse(list(target.parent.glob("*.tmp")))
+
+    def test_only_dead_process_session_directories_are_removed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            dead = root / "sessions" / "run-424242-dead"
+            live = root / "sessions" / "run-101-live"
+            unrelated = root / "sessions" / "documents"
+            cache = root / "engine-cache"
+            for directory in (dead, live, unrelated, cache):
+                directory.mkdir(parents=True)
+                (directory / "keep.txt").write_text("fixture", encoding="utf-8")
+            with patch("engine_adapter.process_is_running", side_effect=lambda pid: pid == 101):
+                session = EngineSession(root)
+            self.assertFalse(dead.exists())
+            self.assertTrue(live.exists())
+            self.assertTrue(unrelated.exists())
+            self.assertTrue((cache / "keep.txt").exists())
+            session.clear_credentials()
+
     def test_exit_zero_2fa_is_not_success(self):
         self.assertEqual(auth_result(0, json.dumps({"message": "2FA code is required; supply --auth-code"})),
                          (False, True, ""))
@@ -106,6 +145,17 @@ class GuiIntegrationTests(unittest.TestCase):
         import ios_old_app_downloader as gui
         cls.gui = gui
         cls.app = gui.QApplication.instance() or gui.QApplication([])
+        # This offline suite mocks the CLI; no downloaded binary is needed.
+        cls.engine_fixture = tempfile.TemporaryDirectory()
+        executable = Path(cls.engine_fixture.name) / "offline-engine.exe"
+        executable.write_bytes(b"offline test placeholder; never executed")
+        cls.engine_path = patch.object(gui, "IPATOOL_PATH", str(executable))
+        cls.engine_path.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.engine_path.stop()
+        cls.engine_fixture.cleanup()
 
     def setUp(self):
         self.diagnostics = patch.object(self.gui, "_diagnostic")
@@ -120,6 +170,199 @@ class GuiIntegrationTests(unittest.TestCase):
         self.dialog.deleteLater()
         self.dialogs.stop()
         self.diagnostics.stop()
+
+    def test_filename_fields_cannot_escape_download_directory(self):
+        name = self.gui.safe_filename("..\\CON:/app", "../../1:2\\3", "123", "456")
+        self.assertNotRegex(name, r'[\\/:*?"<>|]')
+        self.assertFalse(name.startswith("."))
+        self.assertTrue(name.endswith(".ipa"))
+        self.assertLessEqual(len(self.gui.safe_filename("长" * 1000, "9" * 1000, 123, 456)), 165)
+
+    def test_filename_distinguishes_same_names_and_unknown_versions(self):
+        file_name = self.gui.safe_filename
+        self.assertNotEqual(file_name("App", "1.0", 123, 1), file_name("App", "1.0", 456, 1))
+        self.assertNotEqual(file_name("App", "", 123, 1), file_name("App", "", 123, 2))
+
+    def test_ipa_validation_rejects_html_and_wrong_bundle(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "example.ipa"
+            path.write_bytes(b"<html>not an IPA</html>" * 100)
+            self.assertFalse(self.gui._is_valid_ipa(path))
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("Payload/App.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "com.test.app"}))
+            self.assertTrue(self.gui._is_valid_ipa(path, "com.test.app"))
+            self.assertFalse(self.gui._is_valid_ipa(path, "com.different.app"))
+
+    def test_ipa_validation_rejects_invalid_plist(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "invalid.ipa"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("Payload/App.app/Info.plist", b"<?xml version='1.0'?><plist><broken>")
+            self.assertFalse(self.gui._is_valid_ipa(path))
+
+    def test_package_list_skips_directories_named_as_ipa(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "not-a-file.ipa").mkdir()
+            path = Path(folder) / "package.ipa"
+            path.write_bytes(b"package listing fixture")
+            listing = self.gui.QListWidget()
+            with patch.object(self.gui, "IPAS_DIR", folder):
+                self.gui.TransparentMacWindow._refresh_install_list(SimpleNamespace(install_list=listing))
+            self.assertEqual(listing.count(), 1)
+            self.assertEqual(listing.item(0).data(self.gui.Qt.ItemDataRole.UserRole), str(path))
+            listing.deleteLater()
+
+    def test_cancelled_http_request_does_not_open_connection(self):
+        cancel = threading.Event()
+        cancel.set()
+        with patch.object(self.gui, "_build_opener") as opener:
+            with self.assertRaises(self.gui.RequestCancelled):
+                self.gui._http_get_bytes("https://example.invalid", cancel=cancel)
+            opener.assert_not_called()
+
+    def test_http_retries_share_one_timeout_budget(self):
+        opener = Mock()
+        opener.open.side_effect = OSError("offline")
+        with patch.object(self.gui, "_http_route_candidates", return_value=["", "http://proxy.invalid"]), \
+                patch.object(self.gui, "_build_opener", return_value=opener), \
+                patch.object(self.gui.time, "monotonic", side_effect=[0, 0, 30, 30]), \
+                patch.object(self.gui.time, "sleep"):
+            with self.assertRaises(TimeoutError):
+                self.gui._http_get_bytes("https://example.invalid", timeout=25)
+        opener.open.assert_called_once()
+
+    def test_http_read_stops_when_cancelled(self):
+        cancel = threading.Event()
+        response = Mock()
+        def read(_size):
+            cancel.set()
+            return b"partial"
+        response.read1.side_effect = read
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        with patch.object(self.gui, "_http_route_candidates", return_value=[""]), \
+                patch.object(self.gui, "_build_opener", return_value=opener):
+            with self.assertRaises(self.gui.RequestCancelled):
+                self.gui._http_get_bytes("https://example.invalid", cancel=cancel)
+        response.read1.assert_called_once()
+
+    def test_http_response_size_is_limited(self):
+        response = Mock()
+        response.read1.return_value = b"123456789"
+        opener = MagicMock()
+        opener.open.return_value.__enter__.return_value = response
+        with patch.object(self.gui, "_http_route_candidates", return_value=[""]), \
+                patch.object(self.gui, "_build_opener", return_value=opener), \
+                patch.object(self.gui.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "size limit"):
+                self.gui._http_get_bytes("https://example.invalid", max_bytes=8)
+
+    def test_icon_cache_has_a_byte_budget(self):
+        with patch.dict(self.gui._ICON_CACHE, {"a": b"aa", "b": b"bb"}, clear=True), \
+                patch.object(self.gui, "_ICON_CACHE_BYTE_LIMIT", 5), \
+                patch.object(self.gui, "_http_get_bytes", return_value=b"cccc"):
+            self.assertEqual(self.gui._get_cached_icon("c"), b"cccc")
+            self.assertLessEqual(sum(map(len, self.gui._ICON_CACHE.values())), 5)
+
+    def test_local_history_filters_invalid_identifiers_and_sizes(self):
+        data = {"code": 200, "total": 1, "data": [
+            {"bundle_version": "1.0", "external_identifier": "9", "size": "invalid"},
+            {"bundle_version": "bad", "external_identifier": "../unsafe"}]}
+        with patch.object(self.gui, "_http_get_json", return_value=data):
+            rows = self.gui.api_fetch_history_local(123)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["external_id"], "9")
+        self.assertEqual(rows[0]["size"], 0)
+
+    def test_paused_download_does_not_launch_a_process(self):
+        worker = self.gui.DownloadWorker("", {"id": "1", "out": "unused.ipa"})
+        worker.pause()
+        with patch.object(self.gui, "_ipatool_env") as environment, \
+                patch.object(self.gui._ENGINE_SESSION, "launch") as launch:
+            self.assertEqual(worker._stream(worker.task, []), ("paused", ""))
+            environment.assert_not_called()
+            launch.assert_not_called()
+
+    def test_cancel_during_preparation_does_not_launch_a_process(self):
+        worker = self.gui.DownloadWorker("", {"id": "1", "out": "unused.ipa"})
+        with patch.object(self.gui, "_ipatool_env", side_effect=lambda **kw: worker.cancel() or {}), \
+                patch.object(self.gui._ENGINE_SESSION, "launch") as launch:
+            self.assertEqual(worker._stream(worker.task, []), ("cancelled", ""))
+            launch.assert_not_called()
+
+    def test_stream_error_stops_monitor_and_child_process(self):
+        worker = self.gui.DownloadWorker("", {"id": "1", "out": "unused.ipa"})
+        process = MagicMock()
+        process.stdout.__iter__.side_effect = OSError("broken pipe")
+        process.poll.return_value = None
+        monitor = Mock()
+        with patch.object(self.gui, "_ipatool_env", return_value={}), \
+                patch.object(self.gui._ENGINE_SESSION, "launch", return_value=process), \
+                patch.object(self.gui.threading, "Thread", return_value=monitor):
+            with self.assertRaisesRegex(OSError, "broken pipe"):
+                worker._stream(worker.task, [])
+        process.kill.assert_called_once()
+        process.stdout.close.assert_called_once()
+        monitor.join.assert_called_once()
+        self.assertIsNone(worker._proc)
+
+    def test_stream_checks_real_child_output_and_ipa_before_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "result.ipa"
+            task = {"id": "1", "out": str(path), "bundle": "com.test.app"}
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("Payload/App.app/Info.plist", plistlib.dumps({"CFBundleIdentifier": "com.test.app"}))
+            command = [sys.executable, "-c", "print('component finished')"]
+            with patch.object(self.gui, "_ipatool_env", return_value=os.environ.copy()), \
+                    patch.object(self.gui, "_ipatool_command", return_value=command):
+                valid = self.gui.DownloadWorker("", task)
+                self.assertEqual(valid._stream(task, [])[0], "completed")
+                path.write_bytes(b"not an IPA" * 200)
+                invalid = self.gui.DownloadWorker("", task)
+                status, reason = invalid._stream(task, [])
+                self.assertEqual(status, "failed")
+                self.assertIn("IPA", reason)
+
+    def test_active_downloads_prevent_account_state_reset(self):
+        parent = SimpleNamespace(_download_workers={"1": object()})
+        with patch.object(self.dialog, "parent", return_value=parent), \
+                patch.object(self.dialog, "_run_tool_async") as run:
+            self.dialog._do_login()
+            self.dialog._do_logout()
+            run.assert_not_called()
+
+    def test_search_cancellation_is_not_reported_as_an_error(self):
+        worker = self.gui.SearchWorker("example")
+        errors = []
+        worker.signals.error.connect(errors.append)
+        worker.stop()
+        with patch.object(self.gui, "_build_opener") as opener:
+            worker.run()
+            opener.assert_not_called()
+        self.assertFalse(errors)
+
+    def test_history_cancellation_is_not_reported_as_an_error(self):
+        worker = self.gui.HistoryWorker(123)
+        errors = []
+        worker.signals.error.connect(errors.append)
+        worker.stop()
+        with patch.object(self.gui, "_http_get_json") as query:
+            worker.run()
+            query.assert_not_called()
+        self.assertFalse(errors)
+
+    def test_exit_waits_for_running_workers_before_quitting_qt(self):
+        worker = Mock()
+        state = SimpleNamespace(_exit_workers=[worker], _finish_exit=Mock())
+        with patch.object(self.gui.QTimer, "singleShot") as timer, \
+                patch.object(self.gui.QApplication, "quit") as quit_app:
+            worker.isRunning.return_value = True
+            self.gui.TransparentMacWindow._finish_exit(state)
+            quit_app.assert_not_called()
+            timer.assert_called_once_with(100, state._finish_exit)
+            worker.isRunning.return_value = False
+            self.gui.TransparentMacWindow._finish_exit(state)
+            quit_app.assert_called_once()
 
     def test_code_failure_does_not_start_another_login(self):
         with patch.object(self.dialog, "_run_tool_async") as run:
@@ -221,7 +464,7 @@ class GuiIntegrationTests(unittest.TestCase):
         self.dialog.email_edit.setText("integration-check@example.invalid")
         self.dialog.pwd_edit.setText("not-a-real-password")
         with patch.object(self.gui, "PROXY_MODE", "auto"), patch.object(self.gui, "_local_proxy_cache", None), \
-                patch.object(self.gui, "APPLE_ID_SAVE", ""), patch.object(self.gui, "save_config"), \
+                patch.object(self.gui, "APPLE_ID_SAVE", ""), \
                 patch.object(self.gui, "_windows_system_proxy", return_value=""), \
                 patch.object(self.gui, "_env_proxy", return_value=""), patch.object(self.gui.socket, "socket") as socket, \
                 patch.object(self.dialog, "_run_tool_async", side_effect=run_worker), \
