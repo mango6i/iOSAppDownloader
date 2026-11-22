@@ -44,6 +44,8 @@ or other-platform commands. No browser or third-party signing service is used.
 
 The build uses pinned Go 1.27.4, source/Go archive hashes, deterministic flags,
 Go module checksums, the private-certificate tests and final executable hash.
+All compatibility overlays are normalized to UTF-8/LF before compiling,
+including the embedded storefront JSON, independently of Git checkout settings.
 If the exact toolchain is unavailable, it is downloaded into the temporary
 build workspace only, not installed globally. End users need no build tools.
 

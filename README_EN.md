@@ -78,7 +78,7 @@ The Chinese and English UI strings are centralized in the `TRANSLATIONS` diction
 
 ## API Source
 
-The Windows backend is based on [majd/ipatool v2.8.1](https://github.com/majd/ipatool/releases/tag/v2.8.1), with a minimal app-private pinned Apple-root compatibility fix to avoid HTTP 403 during certificate downloading. It does not modify Windows certificate stores, disable TLS verification, use browser authentication, third-party signing servers, or the abandoned independent Python authentication implementation.
+The Windows backend is based on [majd/ipatool v2.8.1](https://github.com/majd/ipatool/releases/tag/v2.8.1), with an app-private pinned Apple root to avoid certificate-download HTTP 403, a shared known-storefront map, and non-secret region metadata for immediate account-region synchronization. It does not modify Windows certificate stores, disable TLS verification, use browser authentication, third-party signing servers, or the abandoned independent Python authentication implementation.
 
 The app version is **v1.0.8**. This revision integrates modern authentication and local Anisette provisioning, live setup messages, phone-number Apple IDs, official version discovery/metadata and historical IPA downloads. Other-platform commands and the MCP server are not exposed.
 

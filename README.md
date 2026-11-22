@@ -65,7 +65,7 @@
 - `ios_old_app_downloader.spec`、`appstore.ico`：打包配置与图标；版本号和 EXE 文件属性会从主程序自动生成
 - `requirements.txt`：Python 构建依赖
 - `engine_adapter.py`：官方引擎的接口适配、独立会话与进程取消
-- `build_engine.py`、`ipatool/compat/`：基于官方 2.8.1 源码可复现构建，只补齐程序私有 Apple 根证书，避免下载证书时 HTTP 403；不安装系统证书、不关闭 HTTPS 校验
+- `build_engine.py`、`ipatool/compat/`：基于官方 2.8.1 源码可复现构建，补齐程序私有 Apple 根证书、共享区域映射和安全区域元数据；不安装系统证书、不关闭 HTTPS 校验
 - `ipatool/majd/`：官方 ipatool v2.8.1 许可与校验说明；构建前由 `prepare_engine.py` 从官方准备组件，EXE 成品已内置
 - `docs/releases/`：仅保留当前版本发布说明；历史变更统一查看 `CHANGELOG.md` 或 Git 历史
 - `docs/PROJECT_AUDIT.md`：当前代码检查范围、修复项和验证限制
@@ -78,7 +78,7 @@
 
 ## 接口来源
 
-本软件的 Apple ID 登录、版本列表和 IPA 下载能力基于 [majd/ipatool v2.8.1](https://github.com/majd/ipatool/releases/tag/v2.8.1) 的 Windows 兼容构建，仅将官方 Apple 根证书固定到认证进程内部，解决证书下载 HTTP 403。没有浏览器登录，不修改系统证书，也不使用第三方签名服务器或之前弃用的独立 Python 认证方案。
+本软件的 Apple ID 登录、版本列表和 IPA 下载能力基于 [majd/ipatool v2.8.1](https://github.com/majd/ipatool/releases/tag/v2.8.1) 的 Windows 兼容构建：将官方 Apple 根证书固定到认证进程内部，解决证书下载 HTTP 403；加入共享区域映射及安全区域元数据，修复已知商店区域发现失败并同步登录后的搜索区域。没有浏览器登录，不修改系统证书，也不使用第三方签名服务器或之前弃用的独立 Python 认证方案。
 
 当前版本为 **v1.0.8**。升级到新版认证及本地 Anisette 配置，支持登录准备进度、手机号账号、官方版本列表和版本号补全、指定历史版本下载；暂不开放 macOS/tvOS/watchOS/visionOS 或 MCP 服务。
 

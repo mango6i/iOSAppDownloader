@@ -1,0 +1,5 @@
+# Keep embedded resources and reproducible build inputs identical on Windows.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.exe binary

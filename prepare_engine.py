@@ -36,8 +36,10 @@ def prepare(root, archive_path=None, go=None):
     with tempfile.TemporaryDirectory(prefix="iosapp-engine-build-") as workspace:
         built = build(root, workspace, source_archive=archive_path, go=go)
         binary = built.read_bytes()
-    if hashlib.sha256(binary).hexdigest() != EXE_SHA256:
-        raise ValueError("Compatible engine executable checksum mismatch")
+    actual_digest = hashlib.sha256(binary).hexdigest()
+    if actual_digest != EXE_SHA256:
+        raise ValueError("Compatible engine executable checksum mismatch: expected "
+                         + EXE_SHA256 + ", got " + actual_digest)
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as temporary:
         temporary.write(binary)

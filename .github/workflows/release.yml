@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths:
+      - .gitattributes
       - ios_old_app_downloader.py
       - engine_adapter.py
       - prepare_engine.py

@@ -19,6 +19,13 @@ GO_ARCHIVE = GO_VERSION + ".windows-amd64.zip"
 GO_SHA256 = "178ab98950ac69ab25069307dc6ade79f3816e414cce95b4da166a115cde1e7e"
 
 
+def copy_build_text(source, destination):
+    # Windows Git checkouts may use CRLF. In particular, go:embed preserves
+    # JSON bytes verbatim, so normalize every overlay before the pinned build.
+    Path(destination).write_text(Path(source).read_text(encoding="utf-8"),
+                                 encoding="utf-8", newline="\n")
+
+
 def download_verified(url, target, digest, size_limit):
     request = urllib.request.Request(url, headers={"User-Agent": "iOSAppDownloader-source-build"})
     hasher = hashlib.sha256()
@@ -51,9 +58,9 @@ def build(root, work, source_archive=None, go=None):
         archive.extractall(work, filter="data")
     source = work / "ipatool-2.8.1"
     for name in ("http_client.go", "http_client_compat_test.go"):
-        shutil.copy2(root / "ipatool" / "compat" / name, source / "internal" / "storeauth" / name)
+        copy_build_text(root / "ipatool" / "compat" / name, source / "internal" / "storeauth" / name)
     for name in ("storefronts.json", "storefront_compat.go", "storefront_compat_test.go"):
-        shutil.copy2(root / "ipatool" / "compat" / name, source / "pkg" / "appstore" / name)
+        copy_build_text(root / "ipatool" / "compat" / name, source / "pkg" / "appstore" / name)
     # Exact anchors fail closed if the pinned upstream changes. Keep upstream
     # dynamic discovery for unknown/new regions; known account IDs work offline.
     patches = {

@@ -18,6 +18,18 @@ from engine_adapter import EngineSession, auth_result, version_rows, redact_outp
 
 
 class AdapterTests(unittest.TestCase):
+    def test_build_overlay_is_identical_for_lf_and_windows_crlf(self):
+        from build_engine import copy_build_text
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name, content in (("storefronts.json", b'{\n  "143441": "us"\n}\n'),
+                                  ("storefront_compat.go", b'package appstore\n//go:embed storefronts.json\n')):
+                source, target = root / name, root / (name + ".out")
+                for newline in (b"\n", b"\r\n"):
+                    source.write_bytes(content.replace(b"\n", newline))
+                    copy_build_text(source, target)
+                    self.assertEqual(target.read_bytes(), content)
+
     def test_account_country_uses_storefront_not_email_or_exit_code(self):
         for storefront, expected in (("143441-19,29", "us"), ("143465,34", "cn"), ("143463", "hk")):
             output = json.dumps({"success": True, "email": "test@example.invalid", "storeFront": storefront})
