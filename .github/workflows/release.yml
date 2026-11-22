@@ -8,6 +8,7 @@ on:
       - ios_old_app_downloader.py
       - engine_adapter.py
       - prepare_engine.py
+      - build_engine.py
       - test_engine_adapter.py
       - ios_old_app_downloader.spec
       - requirements.txt

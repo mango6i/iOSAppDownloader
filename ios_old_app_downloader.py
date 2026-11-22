@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from ctypes import windll
 from engine_adapter import (ENGINE_VERSION, EngineSession, auth_result as _engine_auth_result,
+                            account_country as _engine_account_country,
                             json_records as _engine_json_records, version_rows as _engine_version_rows,
                             redact_output as _engine_redact_output)
 
@@ -64,7 +65,7 @@ except Exception as _e:
                     "当前缺少 PyQt6 依赖。\n\n"
                     "你运行的是源码文件，请先安装依赖：\npip install PyQt6\n\n"
                     "如果你想要无需安装的版本，请使用打包好的 "
-                    "iOSAppDownloader_v1.0.7.exe。\n\n原始错误：%s" % _e)
+                    "iOSAppDownloader_v1.0.8.exe。\n\n原始错误：%s" % _e)
     sys.exit(1)
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -191,7 +192,7 @@ def _normalize_2fa_code(value):
 # ─────────────────────────────────────────────
 LANGUAGE_MODE = "auto"  # auto: 跟随 Windows 系统语言；zh: 中文；en: English
 STARTUP_REPO_URL = "https://github.com/mango6i/iOSAppDownloader"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 
 TRANSLATIONS = {
     "zh": {
@@ -236,7 +237,7 @@ TRANSLATIONS = {
         "diag_hint": "检测当前网络能否通过 Apple 登录认证",
         "done": "完成",
         "language": "界面语言:",
-        "software_version": "软件版本：v%s · ipatool v%s" % (APP_VERSION, ENGINE_VERSION),
+        "software_version": "软件版本：v%s" % APP_VERSION,
         "language_auto": "跟随系统（自动）",
         "language_zh": "简体中文",
         "language_en": "English",
@@ -428,7 +429,7 @@ TRANSLATIONS = {
         "diag_hint": "Check whether this network can reach Apple sign-in services",
         "done": "Done",
         "language": "Language:",
-        "software_version": "Version: v%s · ipatool v%s" % (APP_VERSION, ENGINE_VERSION),
+        "software_version": "Version: v%s" % APP_VERSION,
         "language_auto": "Follow system (Auto)",
         "language_zh": "简体中文",
         "language_en": "English",
@@ -607,7 +608,10 @@ def localized(zh, en):
 
 
 def region_name(code):
-    return tr("region_" + str(code or "cn"))
+    code = str(code or "cn").lower()
+    key = "region_" + code
+    value = tr(key)
+    return code.upper() if value == key else value
 
 
 def limit_name(number):
@@ -637,8 +641,7 @@ COMBO_STYLE = (
     "border-radius:8px;padding:6px 10px;font-size:13px;color:#222;min-width:90px;}"
     "QComboBox:hover{background:rgba(255,255,255,120);}"
     "QComboBox::drop-down{border:none;width:24px;background:transparent;}"
-    "QComboBox::down-arrow{image:none;border-left:5px solid transparent;border-right:5px solid transparent;"
-    "border-top:6px solid rgba(60,60,60,200);width:0px;height:0px;}"
+    "QComboBox::down-arrow{image:none;border:none;width:0px;height:0px;}"
     "QComboBox QAbstractItemView{background:#ffffff;border:none;border-radius:8px;"
     "padding:4px;outline:none;}"
     "QComboBox QAbstractItemView::item{min-height:28px;padding:6px 10px;"
@@ -646,6 +649,23 @@ COMBO_STYLE = (
     "QComboBox QAbstractItemView::item:selected{background:rgba(0,122,255,170);color:#fff;}"
     "QComboBox QAbstractItemView::item:hover{background:rgba(0,122,255,90);color:#222;}"
 )
+
+
+class ChevronComboBox(QComboBox):
+    """A font-independent open chevron, not the QSS zero-size border block."""
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor(65, 65, 65, 210 if self.isEnabled() else 90)
+        pen = QPen(color, 1.8, Qt.PenStyle.SolidLine,
+                   Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        center_x, center_y = self.width() - 16, self.height() / 2
+        path = QPainterPath(QPointF(center_x - 4.5, center_y - 2))
+        path.lineTo(center_x, center_y + 2.5)
+        path.lineTo(center_x + 4.5, center_y - 2)
+        painter.drawPath(path)
 
 
 def style_combo_clean(combo):
@@ -950,9 +970,12 @@ class MacStyleMessageBox(QDialog):
             msg.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse)
         else:
             msg.setTextFormat(Qt.TextFormat.PlainText)
-        # Preserve the upstream repository's long-message layout fix, using
-        # QLabel's own rich/plain-text measurement at the actual inner width.
-        text_height = max(26, msg.heightForWidth(self.MAX_WIDTH - 48))
+        msg.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        msg.ensurePolished()  # Apply the final QSS font before measuring text.
+        # Rich-text links and mixed-size spans need the styled font's height,
+        # not the unpolished QLabel metrics (which clipped the last link).
+        text_height = max(26, msg.heightForWidth(self.MAX_WIDTH - 48) + 12)
+        self.message_label = msg
         msg.setMinimumHeight(text_height)
         total_height = max(240, text_height + 160)
         self._scroll_host = None
@@ -1156,6 +1179,8 @@ class SettingsDialog(QDialog):
 
     def _run_tool_async(self, args, callback, timeout=60, proxy=None):
         w = ToolWorker(args, timeout, proxy=proxy)
+        if list(args[:2]) == ["auth", "login"]:
+            w.progress.connect(self._on_login_progress)
         self._threads.append(w)
         _ACTIVE_TOOL_WORKERS.add(w)
 
@@ -1190,6 +1215,22 @@ class SettingsDialog(QDialog):
         w.finished.connect(_finished)
         w.start()
         return w
+
+    def _on_login_progress(self, output):
+        if self._closing or self._login_phase not in ("verifying_password", "verifying_code"):
+            return
+        records = [r for r in _json_records(output) if isinstance(r, dict)]
+        messages = [str(r.get("message", "")).strip() for r in records]
+        detail = next((m for m in reversed(messages) if m), "")
+        if detail:
+            if detail.lower().startswith("preparing authentication"):
+                detail = localized("正在准备安全认证，首次登录可能需要几分钟。",
+                                   "Preparing secure authentication; first login may take a few minutes.")
+            elif current_language() == "zh" and detail.isascii():
+                detail = "正在处理 Apple 的认证请求，请稍候。"
+            self.status_card.setText(localized(
+                "正在连接 Apple…<br>%s<br>关闭设置可取消。",
+                "Connecting to Apple…<br>%s<br>Close settings to cancel.") % _ht(detail[-600:]))
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
@@ -1344,7 +1385,7 @@ class SettingsDialog(QDialog):
         proxy_row = QHBoxLayout()
         proxy_row.setSpacing(8)
         proxy_row.addWidget(self._field_label("proxy"))
-        self.proxy_mode_combo = QComboBox()
+        self.proxy_mode_combo = ChevronComboBox()
         self.proxy_mode_combo.setStyleSheet(COMBO_STYLE)
         self.proxy_mode_combo.addItem(tr("proxy_auto"), "auto")
         self.proxy_mode_combo.addItem(tr("proxy_direct"), "direct")
@@ -1403,7 +1444,7 @@ class SettingsDialog(QDialog):
         language_row = QHBoxLayout()
         language_row.setSpacing(8)
         language_row.addWidget(self._field_label("language"))
-        self.language_combo = QComboBox()
+        self.language_combo = ChevronComboBox()
         self.language_combo.setStyleSheet(COMBO_STYLE)
         self.language_combo.addItem(tr("language_auto"), "auto")
         self.language_combo.addItem(tr("language_zh"), "zh")
@@ -1497,7 +1538,7 @@ class SettingsDialog(QDialog):
         _diagnostic("login_request", "with_2fa=%s mode=non_interactive" % bool(code))
         self._run_tool_async(
             args, lambda rc, out: self._on_login_done(rc, out, bool(code)),
-            timeout=90 if code else 180, proxy=proxy)
+            timeout=120 if code else 300, proxy=proxy)
 
     def _on_login_done(self, rc, out, had_code):
         _diagnostic("login_response", "rc=%s with_2fa=%s output_length=%s" %
@@ -1585,7 +1626,7 @@ class SettingsDialog(QDialog):
             self.status_card.setText(tr("status_logged") + _ht(who or self.email_edit.text().strip()))
             parent = self.parent()
             if parent is not None and hasattr(parent, "_on_login_status"):
-                parent._on_login_status(rc, out)
+                parent._on_login_status(rc, out, force_region_sync=True)
             self.pwd_edit.clear()
             self.twofa_edit.clear()
             self._pending_pwd = ""
@@ -2725,10 +2766,18 @@ def _friendly_auth_error(out):
     for record in _json_records(text):
         if isinstance(record, dict):
             value = str(record.get("error") or record.get("message") or "").strip()
+            if value.lower().startswith("preparing authentication"):
+                continue
             if value and value not in messages:
                 messages.append(value)
-    detail = "\n".join(messages)[-700:] if messages else text[-700:]
+    detail = "\n".join(messages)[-1600:] if messages else text[-1600:]
     low = detail.lower()
+    if "download apple root" in low:
+        return localized(
+            "准备认证失败：Apple 官方根证书下载未完成，尚未完成账号密码验证。\n"
+            "新版已内置经校验的认证证书，无需手动安装系统证书；请确认已运行最新成品。",
+            "Authentication setup failed while obtaining Apple's root certificate; account verification has not completed.\n"
+            "The current build bundles its verified certificate privately and needs no system certificate installation.")
     if any(word in low for word in ("not logged in", "no account", "could not find account", "no such file")):
         return localized("当前尚未登录，或本次会话已被清理。", "Not signed in, or this session was cleared.")
     if any(word in low for word in ("signed authentication request", "no usable authentication response",
@@ -2760,7 +2809,7 @@ def _redact_engine_output(out, secrets=()):
     return _engine_redact_output(out, secrets)
 
 
-def run_tool(args, timeout=120, proxy=None, cancel=None):
+def run_tool(args, timeout=120, proxy=None, cancel=None, progress=None):
     if not IPATOOL_PATH or not os.path.exists(IPATOOL_PATH):
         return -1, "ipatool.exe not found"
     args = list(args)
@@ -2820,7 +2869,13 @@ def run_tool(args, timeout=120, proxy=None, cancel=None):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return -2, "timeout preparing authentication component"
-                rc, out = _ENGINE_SESSION.execute(command, env, min(budget, remaining), cancel)
+                execute_args = (command, env, min(budget, remaining), cancel)
+                if progress:
+                    def report(line):
+                        progress(_redact_engine_output(line, secrets))
+                    rc, out = _ENGINE_SESSION.execute(*execute_args, on_output=report)
+                else:
+                    rc, out = _ENGINE_SESSION.execute(*execute_args)
             except Exception as exc:
                 rc, out = -3, str(exc)
             out = _redact_engine_output(re.sub(r"\x1b\[[0-9;]*m", "", out).strip(), secrets)
@@ -2867,6 +2922,7 @@ class WorkerSignals(QObject):
 
 class ToolWorker(QThread):
     done = pyqtSignal(int, str)
+    progress = pyqtSignal(str)
 
     def __init__(self, args, timeout=60, proxy=None):
         super().__init__()
@@ -2880,7 +2936,8 @@ class ToolWorker(QThread):
 
     def run(self):
         try:
-            rc, out = run_tool(self.args, timeout=self.timeout, proxy=self.proxy, cancel=self._cancel)
+            rc, out = run_tool(self.args, timeout=self.timeout, proxy=self.proxy,
+                               cancel=self._cancel, progress=self.progress.emit)
         except Exception as exc:
             _diagnostic("tool_worker_exception", repr(exc))
             rc, out = -3, str(exc)
@@ -2953,6 +3010,8 @@ class SearchWorker(QThread):
                 self.signals.data.emit(apps)
         except Exception as e:
             if not self._cancel.is_set():
+                import traceback
+                _diagnostic("search_exception", traceback.format_exc())
                 self.signals.error.emit(str(e))
         finally:
             self.signals.finished.emit()
@@ -3502,6 +3561,8 @@ class TransparentMacWindow(QMainWindow):
             self.country_combo.clear()
             for code in ("cn", "hk", "mo", "tw", "us", "jp", "gb", "kr", "sg"):
                 self.country_combo.addItem(region_name(code), code)
+            if self.country_combo.findData(current) < 0:
+                self.country_combo.addItem(region_name(current), current)
             idx = self.country_combo.findData(current)
             self.country_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.country_combo.blockSignals(False)
@@ -3627,16 +3688,18 @@ class TransparentMacWindow(QMainWindow):
             "border-radius:8px;padding:4px 10px;}")
         self._run_tool_async(["auth", "info", "--format", "json"], self._on_login_status, timeout=45)
 
-    def _on_login_status(self, rc, out):
+    def _on_login_status(self, rc, out, force_region_sync=False):
         logged, _, who = _auth_result(rc, out)
         self.logged_in = logged
         self._last_login_who = who or "Apple ID"
         if logged:
+            self._sync_account_region(rc, out, who, force=force_region_sync)
             self.login_status_lbl.setText(tr("logged_in_prefix") + self._last_login_who)
             self.login_status_lbl.setStyleSheet(
                 "QLabel{font-size:12px;color:#0a7;font-weight:600;background:rgba(255,255,255,90);"
                 "border-radius:8px;padding:4px 10px;}")
         else:
+            self._last_account_region = None
             self.login_status_lbl.setText(tr("not_logged"))
             self.login_status_lbl.setStyleSheet(
                 "QLabel{font-size:12px;color:#c33;background:rgba(255,255,255,70);"
@@ -3645,6 +3708,42 @@ class TransparentMacWindow(QMainWindow):
             self.download_account_lbl.setText(tr("account_prefix") + (who if logged else tr("not_logged")))
         if not logged and self._startup_login_tip:
             QTimer.singleShot(400, self._show_startup_login_tip)
+
+    def _sync_account_region(self, rc, out, who, force=False):
+        """Update before showing login success; preserve a later manual choice."""
+        country = _engine_account_country(rc, out)
+        if not country:
+            return
+        account_region = (str(who).casefold(), country)
+        if not force and account_region == getattr(self, "_last_account_region", None):
+            return
+        self._last_account_region = account_region
+        global COUNTRY_SAVE
+        COUNTRY_SAVE = country
+        combo = self.country_combo
+        previous = combo.currentData()
+        blocked = combo.blockSignals(True)
+        try:
+            index = combo.findData(country)
+            if index < 0:
+                combo.addItem(region_name(country), country)
+                index = combo.findData(country)
+            combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(blocked)
+        if previous != country:
+            self._stop_content_worker()
+            self.search_results = []
+            self.current_app = None
+            self.history_rows = []
+            self.search_list.clear()
+            self.history_table.setRowCount(0)
+            self.search_btn.setEnabled(True)
+            self.history_load_btn.setEnabled(True)
+            self.search_hint.setText(localized(
+                "已按登录账号切换到%s，请重新搜索应用。",
+                "Switched to %s for this account. Search again.") % region_name(country))
+            self.history_app_info.setText(tr("choose_app_message"))
 
     # ═════════════════════════════════════════
     # ═════════════════════════════════════════
@@ -3679,7 +3778,7 @@ class TransparentMacWindow(QMainWindow):
         self.search_input.returnPressed.connect(self._do_search)
         top.addWidget(self.search_input, 1)
 
-        self.country_combo = QComboBox()
+        self.country_combo = ChevronComboBox()
         for code in ("cn", "hk", "mo", "tw", "us", "jp", "gb", "kr", "sg"):
             self.country_combo.addItem(region_name(code), code)
         idx = self.country_combo.findData(COUNTRY_SAVE)
@@ -3691,7 +3790,7 @@ class TransparentMacWindow(QMainWindow):
 
         self.show_label = QLabel(tr("show_label"))
         top.addWidget(self.show_label)
-        self.limit_combo = QComboBox()
+        self.limit_combo = ChevronComboBox()
         for n in [5, 10, 20, 30, 50, 100]:
             self.limit_combo.addItem(limit_name(n), n)
         self.limit_combo.setCurrentIndex(0)
@@ -3929,7 +4028,7 @@ class TransparentMacWindow(QMainWindow):
         ctrl.setSpacing(8)
         self.history_mode_label = QLabel(tr("history_mode_label"))
         ctrl.addWidget(self.history_mode_label)
-        self.history_mode_combo = QComboBox()
+        self.history_mode_combo = ChevronComboBox()
         self.history_mode_combo.addItem(tr("official_versions"), "apple")
         self.history_mode_combo.addItem(tr("login_free_lookup"), "local")
         style_combo_clean(self.history_mode_combo)
@@ -4962,6 +5061,7 @@ def _frozen_smoke_test(report_path):
     """Opt-in packaging check. No Apple credentials or network requests."""
     from pathlib import Path
     import hashlib
+    from prepare_engine import EXE_SHA256
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     app = QApplication.instance() or QApplication([])
     # The offscreen platform does not enumerate Windows fallback fonts.
@@ -4983,32 +5083,80 @@ def _frozen_smoke_test(report_path):
     # The CLI checks below deliberately use direct mode and cannot cover it.
     auto_routes = _candidate_proxies()
     automatic_proxy = _resolve_proxy()
+    https_ready, https_error = False, ""
+    try:
+        context = ssl.create_default_context()
+        _build_opener("")
+        https_ready = context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED
+    except Exception as exc:
+        https_error = str(exc)
     version_rc, version_out = run_tool(["--version"], timeout=15, proxy="")
     info_rc, info_out = run_tool(["auth", "info", "--format", "json", "--non-interactive"], timeout=15, proxy="")
+    startup = MacStyleMessageBox(title=tr("startup_title"), message=startup_login_message(),
+                                 icon_type="info", rich_message=True)
+    startup.show()
+    app.processEvents()
+    startup_label = startup.message_label
     report = {
         "application_version": APP_VERSION,
         "engine_version": version_out,
         "engine_sha256": hashlib.sha256(Path(IPATOOL_PATH).read_bytes()).hexdigest() if IPATOOL_PATH else "",
         "qt_widgets_loaded": True,
+        "https_context_ready": https_ready,
+        "https_context_error": https_error,
         "automatic_proxy_detection_completed": bool(auto_routes) and isinstance(automatic_proxy, str),
         "fresh_session_not_logged_in": info_rc == 1 and "keyring" in info_out.lower(),
         "status_text_fits": settings.status_card.height() >= settings.status_card.heightForWidth(settings.status_card.width()),
+        "startup_text_fits": startup_label.height() >= startup_label.heightForWidth(startup_label.width()),
+        "settings_version_label_clean": "ipatool" not in tr("software_version").lower() and APP_VERSION in tr("software_version"),
+        "account_region_metadata_ready": _engine_account_country(0,
+            '{"success":true,"email":"check@example.invalid","storeFront":"143441-1,34","countryCode":"US"}') == "us",
         "uses_independent_python_sap": False,
     }
-    report["passed"] = (version_rc == 0 and "2.7.0" in version_out and
+    report["passed"] = (version_rc == 0 and ENGINE_VERSION in version_out and
+                        report["https_context_ready"] and
                         report["fresh_session_not_logged_in"] and report["status_text_fits"] and
+                        report["startup_text_fits"] and report["settings_version_label_clean"] and
+                        report["account_region_metadata_ready"] and
                         report["automatic_proxy_detection_completed"] and
-                        report["engine_sha256"] == "7b83589b74ad533f5d5dbab0ca87a5cb76b123bcbeb2553d57e9c154e35d8755")
+                        report["engine_sha256"] == EXE_SHA256)
     target = Path(report_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     settings.grab().save(str(target.with_suffix(".png")))
+    startup.grab().save(str(target.with_name(target.stem + "-startup.png")))
     target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     settings.reject()
+    startup.reject()
+    _shutdown_engine()
+    return 0 if report["passed"] else 1
+
+
+def _search_smoke_test(report_path):
+    """Opt-in public API check through the packaged search worker, no account."""
+    from pathlib import Path
+    import traceback
+    report = {"application_version": APP_VERSION, "passed": False}
+    try:
+        captured, errors = [], []
+        worker = SearchWorker("iplayer", "us", 5)
+        worker.signals.data.connect(captured.append)
+        worker.signals.error.connect(errors.append)
+        worker.run()
+        report.update(result_count=len(captured[0]) if captured else 0, errors=errors)
+        report["passed"] = bool(captured and captured[0] and not errors)
+    except Exception:
+        report["traceback"] = traceback.format_exc()
+    Path(report_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     _shutdown_engine()
     return 0 if report["passed"] else 1
 
 
 def main():
+    if "--search-test" in sys.argv:
+        index = sys.argv.index("--search-test")
+        if index + 1 >= len(sys.argv):
+            raise ValueError("--search-test requires a report file path")
+        sys.exit(_search_smoke_test(sys.argv[index + 1]))
     if "--self-test" in sys.argv:
         index = sys.argv.index("--self-test")
         if index + 1 >= len(sys.argv):

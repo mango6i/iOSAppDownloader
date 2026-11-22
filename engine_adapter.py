@@ -1,9 +1,11 @@
-"""Windows adapter for the official majd/ipatool v2.7 CLI (no Python SAP runtime)."""
+"""Windows adapter for the official majd/ipatool CLI (no Python SAP runtime)."""
 import ctypes
 import hashlib
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import shutil
 import subprocess
@@ -11,14 +13,21 @@ import tempfile
 import threading
 import time
 
-ENGINE_VERSION = "2.7.0"
+from prepare_engine import VERSION as ENGINE_VERSION
 
-# These are the exact asset hashes pinned by upstream v2.7.0, not user data.
+# Optional local seeds must match the modern framework profile pinned by 2.8.1.
+# Never copy the incompatible 2.7 CommerceKit/CoreFP profile into the new cache.
 SEED_FILES = {
-    "apple-assets/CommerceKit": ("ipatool/sap/apple-assets-v2/CommerceKit", "b84ff12c21987856c0a17b78f1ad82b73195a6dec5f3b208a17d245555a2c8a2"),
-    "apple-assets/CommerceCore": ("ipatool/sap/apple-assets-v2/CommerceCore", "c5401e57402230f3c876409d295319ddf1e61287bc882683c5d61277be7bc1f2"),
-    "apple-assets/CoreFP": ("ipatool/sap/apple-assets-v2/CoreFP", "f19141336be4198d0f8991bb00017c915efc7aeaece36c345f7faa1237ea6074"),
-    "apple-assets/CoreFP.icxs": ("ipatool/sap/apple-assets-v2/CoreFP.icxs", "473e78af86979f5bd4f6269561caf770b3d16c098d918846eeac8cdd2fe6566a"),
+    **{f"apple-assets/{name}": (f"ipatool/sap/apple-assets-macos-27-26A434-arm64-v5/{name}", digest)
+       for name, digest in {
+           "AppleMediaServices": "95f4558aa2c0ccd9f96ed479e336b630b46bf4b4e0baabc1c1ac8c7d55e21ab4",
+           "commerce": "c4b2088dd39aeb353f59cb57597902e8317aec66ae7da0414b03c5f932771343",
+           "adid": "43419a206c28bc93ecb8884256088d18306a0a462350f83adbced8e60a94e390",
+           "CoreFP": "afbc123e688a822d980d5816cc2b52f69fde669d1dca92cf85627e1cbee587f6",
+           "CoreFP.icxs": "cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b",
+           "fairplayd": "1e58d37e9602dd0ca5e24b14762063b6c310248b4d3a94272771d815e4ea1784",
+           "FairPlayIOKit": "47452960ec010d3a80b02cceec73a65f8a9758850fd0fb7b2fdac7a5d1b81025",
+       }.items()},
     "unicorn-2.1.4/libunicorn.dll": ("ipatool/unicorn/2.1.4/libunicorn.dll", "d8f9a89222ffa74493a1d47090e17f8e1db8ac171a3128c6a76a4ea09de11469"),
 }
 
@@ -59,6 +68,38 @@ def auth_result(rc, out):
     if rc == 0 and success:
         return True, False, identity
     return False, bool(needs_code), identity
+
+
+@lru_cache(maxsize=1)
+def storefront_country_codes():
+    """Shared with the Go engine; IDs identify regions, not account rights."""
+    path = Path(__file__).resolve().parent / "ipatool" / "compat" / "storefronts.json"
+    values = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(values, dict) or not values:
+        raise ValueError("Bundled storefront mapping is missing or invalid")
+    for code, identifier in values.items():
+        if not re.fullmatch(r"[A-Z]{2}", code) or not re.fullmatch(r"[0-9]{6}", identifier):
+            raise ValueError("Invalid bundled storefront mapping")
+    return {identifier: code.lower() for code, identifier in values.items()}
+
+
+def account_country(rc, out):
+    """Read verified account metadata; never guess from IP/email/GUI settings."""
+    if not auth_result(rc, out)[0]:
+        return ""
+    for record in reversed(list(json_records(out or ""))):
+        if not isinstance(record, dict) or record.get("success") is not True:
+            continue
+        storefront = str(record.get("storeFront") or "").strip()
+        identifier = re.split(r"[-,]", storefront, maxsplit=1)[0]
+        mapped = storefront_country_codes().get(identifier, "")
+        code = str(record.get("countryCode") or "").strip().lower()
+        if not re.fullmatch(r"[a-z]{2}", code):
+            code = ""
+        if code and mapped and code != mapped:
+            return ""  # Conflicting metadata must not silently switch regions.
+        return mapped or code
+    return ""
 
 
 def version_rows(out):
@@ -244,29 +285,56 @@ class EngineSession:
                 self._processes.add(proc)
         return proc
 
-    def execute(self, command, env, timeout, cancel=None):
+    def execute(self, command, env, timeout, cancel=None, on_output=None):
         if cancel and cancel.is_set():
             return -4, "login cancelled"
         proc = self.launch(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         deadline = time.monotonic() + timeout
+        output_queue = queue.Queue()
+        output = []
+
+        def read_output():
+            # On Windows communicate(timeout) does not expose partial output.
+            # Read on a separate thread so JSON messages arrive before exit,
+            # while the calling thread can still cancel a silent CLI.
+            try:
+                for line in proc.stdout:
+                    output_queue.put(("line", line))
+            except Exception as exc:
+                output_queue.put(("error", exc))
+            finally:
+                output_queue.put(("end", None))
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        ended = False
         try:
             while True:
                 cancelled = cancel and cancel.is_set()
                 remaining = deadline - time.monotonic()
                 if cancelled or remaining <= 0:
-                    proc.kill()
-                    output, _ = proc.communicate()
                     return (-4, "login cancelled") if cancelled else (-2, "timeout after %ss" % timeout)
+                if ended and proc.poll() is not None:
+                    return proc.returncode, "".join(output)
                 try:
-                    output, _ = proc.communicate(timeout=min(0.2, remaining))
-                    return proc.returncode, output or ""
-                except subprocess.TimeoutExpired:
+                    kind, value = output_queue.get(timeout=min(0.2, remaining))
+                except queue.Empty:
                     continue
+                if kind == "error":
+                    raise value
+                if kind == "end":
+                    ended = True
+                else:
+                    output.append(value)
+                    if on_output and value.strip():
+                        on_output(value.rstrip("\r\n"))
         finally:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+            reader.join(timeout=5)
+            proc.stdout.close()
             with self._process_lock:
                 self._processes.discard(proc)
 

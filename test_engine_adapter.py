@@ -14,10 +14,81 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from engine_adapter import EngineSession, auth_result, version_rows, redact_output
+from engine_adapter import EngineSession, auth_result, version_rows, redact_output, account_country, storefront_country_codes
 
 
 class AdapterTests(unittest.TestCase):
+    def test_account_country_uses_storefront_not_email_or_exit_code(self):
+        for storefront, expected in (("143441-19,29", "us"), ("143465,34", "cn"), ("143463", "hk")):
+            output = json.dumps({"success": True, "email": "test@example.invalid", "storeFront": storefront})
+            self.assertEqual(account_country(0, output), expected)
+            self.assertEqual(account_country(1, output), "")
+        for output in ('{"success":true,"email":"test@qq.com"}',
+                       '{"success":true,"email":"test@example.invalid","storeFront":"999999"}',
+                       '{"success":true,"email":"test@example.invalid","storeFront":"143441","countryCode":"CN"}'):
+            self.assertEqual(account_country(0, output), "")
+
+    def test_known_region_table_contains_all_gui_regions(self):
+        regions = storefront_country_codes()
+        self.assertEqual(len(regions), 134)
+        for code in ("cn", "hk", "mo", "tw", "us", "jp", "gb", "kr", "sg"):
+            self.assertIn(code, regions.values())
+
+    def test_python_https_initialization_retains_verification(self):
+        import ssl
+        import urllib.request
+        context = ssl.create_default_context()
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.assertTrue(any(isinstance(handler, urllib.request.HTTPSHandler) for handler in opener.handlers))
+
+    def test_bundled_apple_root_matches_official_fingerprint(self):
+        import base64
+        import hashlib
+        import re
+        source = (Path(__file__).parent / "ipatool" / "compat" / "http_client.go").read_text(encoding="utf-8")
+        encoded = re.search(r'const appleRootDERBase64 = "([^"]+)"', source).group(1)
+        self.assertEqual(hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest(),
+                         "b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024")
+        self.assertNotIn("InsecureSkipVerify: true", source)
+        self.assertNotIn("CertAddCertificateContextToStore", source)
+
+    def test_engine_version_has_one_source_of_truth(self):
+        from engine_adapter import ENGINE_VERSION
+        from prepare_engine import VERSION
+        self.assertEqual(ENGINE_VERSION, VERSION)
+        self.assertEqual(VERSION, "2.8.1")
+
+    def test_modern_asset_seeds_do_not_use_legacy_framework_profile(self):
+        from engine_adapter import SEED_FILES
+        self.assertNotIn("apple-assets/CommerceKit", SEED_FILES)
+        self.assertIn("apple-assets/adid", SEED_FILES)
+        for source, (target, digest) in SEED_FILES.items():
+            if source.startswith("apple-assets/"):
+                self.assertIn("apple-assets-macos-27-26A434-arm64-v5/", target)
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_progress_is_delivered_before_process_exit_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as root:
+            session = EngineSession(root)
+            progress = []
+            process_running = []
+            def receive(line):
+                progress.append(line)
+                process_running.append(any(p.poll() is None for p in session._processes))
+            script = ("import time; print('准备认证', flush=True); time.sleep(0.55); "
+                      "print('ready', end='', flush=True)")
+            rc, out = session.execute([sys.executable, "-c", script],
+                                      {**os.environ, "PYTHONIOENCODING": "utf-8"},
+                                      5, on_output=receive)
+            self.assertEqual(rc, 0)
+            self.assertEqual(progress, ["准备认证", "ready"])
+            self.assertTrue(process_running[0])
+            self.assertIn("准备认证", out)
+            self.assertFalse(session._processes)
+            session.clear_credentials()
+
     def test_engine_archive_rejects_a_changed_checksum(self):
         from prepare_engine import unpack_verified
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
@@ -177,6 +248,55 @@ class GuiIntegrationTests(unittest.TestCase):
         self.assertFalse(name.startswith("."))
         self.assertTrue(name.endswith(".ipa"))
         self.assertLessEqual(len(self.gui.safe_filename("长" * 1000, "9" * 1000, 123, 456)), 165)
+
+    def _region_test_window(self):
+        cls = self.gui.TransparentMacWindow
+        with patch.object(cls, "_refresh_login_status"), \
+                patch.object(cls, "_setup_tray", lambda window: setattr(window, "tray_icon", None)):
+            window = cls()
+        self.addCleanup(window.deleteLater)
+        return window
+
+    def test_login_immediately_syncs_region_without_warning_popup(self):
+        with patch.object(self.gui, "COUNTRY_SAVE", "cn"):
+            window = self._region_test_window()
+            window.search_list.addItem("stale country result")
+            output = '{"success":true,"email":"test@example.invalid","storeFront":"143441-1,34","countryCode":"US"}'
+            with patch.object(window, "_on_country_changed") as warning:
+                window._on_login_status(0, output)
+                warning.assert_not_called()
+            self.assertEqual(window.country_combo.currentData(), "us")
+            self.assertEqual(self.gui.COUNTRY_SAVE, "us")
+            self.assertEqual(window.search_list.count(), 0)
+
+    def test_status_refresh_preserves_manual_region_and_account_switch_resyncs(self):
+        with patch.object(self.gui, "COUNTRY_SAVE", "cn"):
+            window = self._region_test_window()
+            first = '{"success":true,"email":"first@example.invalid","storeFront":"143441"}'
+            window._on_login_status(0, first)
+            blocked = window.country_combo.blockSignals(True)
+            window.country_combo.setCurrentIndex(window.country_combo.findData("jp"))
+            window.country_combo.blockSignals(blocked)
+            window._on_login_status(0, first)
+            self.assertEqual(window.country_combo.currentData(), "jp")
+            window._on_login_status(0, first, force_region_sync=True)
+            self.assertEqual(window.country_combo.currentData(), "us")
+            window._on_login_status(0, '{"success":true,"email":"second@example.invalid","storeFront":"143463"}')
+            self.assertEqual(window.country_combo.currentData(), "hk")
+
+    def test_missing_account_region_does_not_guess_from_account_email(self):
+        with patch.object(self.gui, "COUNTRY_SAVE", "jp"):
+            window = self._region_test_window()
+            window._on_login_status(0, '{"success":true,"email":"test@qq.com"}')
+            self.assertEqual(window.country_combo.currentData(), "jp")
+
+    def test_additional_account_region_survives_language_refresh(self):
+        with patch.object(self.gui, "COUNTRY_SAVE", "cn"):
+            window = self._region_test_window()
+            window._on_login_status(0, '{"success":true,"email":"test@example.invalid","storeFront":"143443","countryCode":"DE"}')
+            self.assertEqual(window.country_combo.currentData(), "de")
+            window._apply_language()
+            self.assertEqual(window.country_combo.currentData(), "de")
 
     def test_filename_distinguishes_same_names_and_unknown_versions(self):
         file_name = self.gui.safe_filename
@@ -530,6 +650,8 @@ class GuiIntegrationTests(unittest.TestCase):
             session.environment("")
             cookie = session.home / "cookies"
             cookie.write_text("challenge-cookie", encoding="utf-8")
+            anisette = session.home / "anisette-v4"
+            anisette.write_text("current-provisioning-state", encoding="utf-8")
             with patch.object(self.gui, "_ENGINE_SESSION", session), \
                     patch.object(session, "clear_credentials", wraps=session.clear_credentials) as clear, \
                     patch.object(session, "execute", return_value=(0, '{"success":true,"email":"test@example.invalid"}')):
@@ -537,6 +659,58 @@ class GuiIntegrationTests(unittest.TestCase):
                                    "--auth-code", "123456"], timeout=5, proxy="")
                 clear.assert_not_called()
                 self.assertEqual(cookie.read_text(encoding="utf-8"), "challenge-cookie")
+                self.assertEqual(anisette.read_text(encoding="utf-8"), "current-provisioning-state")
+
+    def test_streaming_login_output_redacts_password_and_code(self):
+        password, code = "private-password", "123456"
+        def execute(*args, on_output=None):
+            line = json.dumps({"message": f"status {password} {code}", "passwordToken": "secret-token"})
+            on_output(line)
+            return 1, line
+        progress = []
+        with patch.object(self.gui._ENGINE_SESSION, "execute", side_effect=execute):
+            _, output = self.gui.run_tool(["auth", "login", "--email", "test@example.invalid",
+                "--password", password, "--auth-code", code], timeout=5, proxy="", progress=progress.append)
+        for text in [output, *progress]:
+            for secret in (password, code, "secret-token"):
+                self.assertNotIn(secret, text)
+
+    def test_login_progress_is_escaped_and_ignored_after_completion(self):
+        self.dialog._login_phase = "verifying_password"
+        self.dialog._on_login_progress('{"message":"准备 <unsafe> & components"}')
+        self.assertNotIn("ipatool", self.dialog.status_card.text().lower())
+        self.assertIn("&lt;unsafe&gt;", self.dialog.status_card.text())
+        self.dialog._login_phase = "idle"
+        self.dialog.status_card.setText("signed in")
+        self.dialog._on_login_progress('{"message":"late progress"}')
+        self.assertEqual(self.dialog.status_card.text(), "signed in")
+
+    def test_preparing_login_progress_is_localized_without_backend_version(self):
+        with patch.object(self.gui, "LANGUAGE_MODE", "zh"):
+            self.dialog._login_phase = "verifying_password"
+            self.dialog._on_login_progress('{"message":"preparing authentication; the first login may take a few minutes"}')
+            text = self.dialog.status_card.text()
+            self.assertIn("正在准备安全认证", text)
+            self.assertNotIn("preparing authentication", text)
+            self.assertNotIn("ipatool", text.lower())
+
+    def test_settings_dropdowns_use_vector_chevrons(self):
+        for combo in self.dialog.findChildren(self.gui.QComboBox):
+            self.assertIsInstance(combo, self.gui.ChevronComboBox)
+
+    def test_first_login_allows_modern_runtime_initialization(self):
+        with patch.object(self.dialog, "_run_tool_async") as run:
+            self.dialog._run_login("test@example.invalid", "fake-password")
+            self.assertEqual(run.call_args.kwargs["timeout"], 300)
+            self.assertIn("--non-interactive", run.call_args.args[0])
+
+    def test_apple_account_action_is_not_hidden_by_setup_message(self):
+        output = ('{"message":"preparing authentication; the first login may take a few minutes"}\n'
+                  '{"error":"Apple requires account review (Continue: https://account.apple.com/)"}')
+        detail = self.gui._friendly_auth_error(output)
+        self.assertNotIn("preparing authentication", detail)
+        self.assertIn("https://account.apple.com/", detail)
+        self.assertFalse(self.gui._auth_result(1, output)[1])
 
     def test_password_sign_in_stops_if_state_cleanup_fails(self):
         with patch.object(self.gui._ENGINE_SESSION, "clear_credentials", side_effect=OSError("locked")), \
@@ -585,6 +759,29 @@ class GuiIntegrationTests(unittest.TestCase):
         # the scroll area. Font fallback on CI can make that hint much taller.
         self.assertGreaterEqual(self.dialog.status_card.height(),
                                 self.dialog.status_card.heightForWidth(self.dialog.status_card.width()))
+
+    def test_version_footer_only_displays_application_version(self):
+        for language in ("zh", "en"):
+            with patch.object(self.gui, "LANGUAGE_MODE", language):
+                text = self.gui.tr("software_version")
+                self.assertIn(self.gui.APP_VERSION, text)
+                self.assertNotIn("ipatool", text.lower())
+
+    def test_startup_repository_link_is_not_clipped(self):
+        for language in ("zh", "en"):
+            with self.subTest(language=language), patch.object(self.gui, "LANGUAGE_MODE", language):
+                box = self.gui.MacStyleMessageBox(message=self.gui.startup_login_message(), rich_message=True)
+                box.show()
+                self.app.processEvents()
+                label = box.message_label
+                self.assertIn(self.gui.STARTUP_REPO_URL, label.text())
+                self.assertTrue(label.openExternalLinks())
+                self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
+                button = box.findChild(self.gui.QPushButton)
+                self.assertGreater(button.geometry().top(), label.geometry().bottom())
+                self.assertLessEqual(button.geometry().bottom(), box.height())
+                box.reject()
+                box.deleteLater()
 
     def test_long_status_text_is_fully_reachable_by_scrolling(self):
         self.dialog.twofa_row_widget.setVisible(True)

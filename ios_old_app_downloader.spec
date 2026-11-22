@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import re
+import ssl
 
 # PyInstaller executes a spec in a namespace where __file__ is not guaranteed.
 # SPECPATH is provided by PyInstaller and keeps the build portable.
@@ -60,11 +61,22 @@ VSVersionInfo(
 
 datas = [
     (str(ROOT / 'appstore.ico'), '.'),
-    # Keep the official executable byte-for-byte intact (including its hash).
+    # Pin the reproducible 2.8.1 build with the private Apple-root fix.
     (str(ROOT / 'ipatool' / 'majd' / 'ipatool.exe'), 'ipatool/majd'),
     (str(ROOT / 'ipatool' / 'majd' / 'LICENSE'), 'licenses/ipatool'),
     (str(ROOT / 'ipatool' / 'majd' / 'README.md'), 'licenses/ipatool'),
+    (str(ROOT / 'ipatool' / 'compat' / 'storefronts.json'), 'ipatool/compat'),
 ]
+# Some managed Python runtimes load an auxiliary CA policy file in
+# SSLContext.__new__. Preserve that runtime's verification policy verbatim;
+# omitting the data makes every HTTPS request fail before opening a socket.
+ssl_source = Path(ssl.__file__)
+ssl_policy_name = 'codex-rejected-cas.pem'
+if ssl_policy_name in ssl_source.read_text(encoding='utf-8'):
+    ssl_policy = ssl_source.with_name(ssl_policy_name)
+    if not ssl_policy.is_file():
+        raise RuntimeError('The build runtime is missing its SSL verification policy file')
+    datas.append((str(ssl_policy), '.'))
 # Do not redistribute Apple's proprietary SAP assets or a separately licensed
 # Unicorn DLL in the EXE. The official engine obtains/verifies its own runtime
 # into the non-secret cache on first use. A developer's local seed stays local.

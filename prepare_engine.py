@@ -1,16 +1,16 @@
-"""Prepare the unmodified official Windows engine for source builds."""
+"""Prepare ipatool 2.8.1 with a reproducible app-private Apple-root fix."""
 import argparse
 import hashlib
 import io
 from pathlib import Path
 import tarfile
 import tempfile
-import urllib.request
 
-VERSION = "2.7.0"
+VERSION = "2.8.1"
 URL = f"https://github.com/majd/ipatool/releases/download/v{VERSION}/ipatool-{VERSION}-windows-amd64.tar.gz"
-ARCHIVE_SHA256 = "b729608716908be287c2e6972f9e8cd05f879810ae5d182fc856c9e57cca0dd5"
-EXE_SHA256 = "7b83589b74ad533f5d5dbab0ca87a5cb76b123bcbeb2553d57e9c154e35d8755"
+ARCHIVE_SHA256 = "a8ccd8075bc083f99caa49976997860ba5e0e3e8f76b450360cd805262542e97"
+EXE_SHA256 = "6acffaf80309ffa920ccf89d4413eba6295e397fe9c38924d1176ea0a252171a"
+UPSTREAM_EXE_SHA256 = "1c8145d4b39ff993ebce7cf832d5504ed563cc1526bb21ef5cef27d28aceb2dd"
 MEMBER = f"bin/ipatool-{VERSION}-windows-amd64.exe"
 
 
@@ -23,24 +23,21 @@ def unpack_verified(data):
             raise ValueError("Unexpected engine archive entry")
         with archive.extractfile(member) as source:
             binary = source.read()
-    if hashlib.sha256(binary).hexdigest() != EXE_SHA256:
+    if hashlib.sha256(binary).hexdigest() != UPSTREAM_EXE_SHA256:
         raise ValueError("Official engine executable checksum mismatch")
     return binary
 
 
-def prepare(root, archive_path=None):
+def prepare(root, archive_path=None, go=None):
     target = Path(root) / "ipatool" / "majd" / "ipatool.exe"
     if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == EXE_SHA256:
         return target
-    if archive_path is not None:
-        data = Path(archive_path).read_bytes()
-    else:
-        request = urllib.request.Request(URL, headers={"User-Agent": "iOSAppDownloader-source-build"})
-        with urllib.request.urlopen(request, timeout=120) as response:
-            data = response.read(64 * 1024 * 1024 + 1)
-        if len(data) > 64 * 1024 * 1024:
-            raise ValueError("Engine archive exceeds the expected size limit")
-    binary = unpack_verified(data)
+    from build_engine import build
+    with tempfile.TemporaryDirectory(prefix="iosapp-engine-build-") as workspace:
+        built = build(root, workspace, source_archive=archive_path, go=go)
+        binary = built.read_bytes()
+    if hashlib.sha256(binary).hexdigest() != EXE_SHA256:
+        raise ValueError("Compatible engine executable checksum mismatch")
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as temporary:
         temporary.write(binary)
@@ -54,6 +51,7 @@ def prepare(root, archive_path=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive", type=Path, help="Use an already downloaded official archive")
+    parser.add_argument("--archive", type=Path, help="Use the pinned upstream source archive")
+    parser.add_argument("--go", type=Path, help="Use an existing Go 1.27.4 executable (build-time only)")
     arguments = parser.parse_args()
-    print(prepare(Path(__file__).resolve().parent, arguments.archive))
+    print(prepare(Path(__file__).resolve().parent, arguments.archive, arguments.go))

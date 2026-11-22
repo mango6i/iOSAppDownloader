@@ -15,7 +15,7 @@ A simple Windows tool for searching App Store apps, viewing older versions, and 
 
 ## Features
 
-- Apple ID email/phone-number sign-in with 2FA, using official ipatool v2.7.0
+- Apple ID email/phone-number sign-in with 2FA, using official ipatool v2.8.1
 - Automatically tries the system proxy, local proxy ports, and direct connection
 - The account session is valid only while the app is running; sign-out and exit clear it
 - Version History provides “Official version list” and “Login-free lookup” modes
@@ -26,7 +26,7 @@ A simple Windows tool for searching App Store apps, viewing older versions, and 
 
 ## Usage
 
-1. Double-click `iOSAppDownloader_v1.0.7.exe`.
+1. Double-click `iOSAppDownloader_v1.0.8.exe`.
 2. Open Settings and sign in with an Apple ID. If two-factor authentication is enabled, enter the 6-digit code in the verification-code field.
 3. Search for an app in App Search and double-click it to open Version History.
 4. Choose “Official version list” or “Login-free lookup”, select versions, and add them to the download queue.
@@ -65,7 +65,8 @@ This repository contains the project source. Windows binaries are published only
 - `ios_old_app_downloader.spec` and `appstore.ico`: packaging configuration and icon; the versioned filename and Windows metadata are generated from the application source
 - `requirements.txt`: Python build dependencies
 - `engine_adapter.py`: official CLI adapter, isolated sessions and cancellation
-- `ipatool/majd/`: official ipatool v2.7.0 license/checksums; `prepare_engine.py` prepares the engine from its official release before source builds. Packaged EXEs already include it.
+- `build_engine.py` / `ipatool/compat/`: reproducible upstream 2.8.1 build with a pinned app-private Apple root; no system certificate installation or disabled TLS verification
+- `ipatool/majd/`: official ipatool v2.8.1 license/checksums; `prepare_engine.py` prepares the engine from its official release before source builds. Packaged EXEs already include it.
 - `docs/releases/`: current-version release notes only; historical changes remain in `CHANGELOG.md` and Git history
 - `docs/PROJECT_AUDIT.md`: current audit scope, fixes and verification limits
 
@@ -77,10 +78,10 @@ The Chinese and English UI strings are centralized in the `TRANSLATIONS` diction
 
 ## API Source
 
-The Windows backend is now [majd/ipatool v2.7.0](https://github.com/majd/ipatool/releases/tag/v2.7.0), replacing Kosthi/ipatool-rs. It does not use browser authentication, third-party signing servers, or the abandoned independent Python authentication implementation.
+The Windows backend is based on [majd/ipatool v2.8.1](https://github.com/majd/ipatool/releases/tag/v2.8.1), with a minimal app-private pinned Apple-root compatibility fix to avoid HTTP 403 during certificate downloading. It does not modify Windows certificate stores, disable TLS verification, use browser authentication, third-party signing servers, or the abandoned independent Python authentication implementation.
 
-The app version remains **v1.0.7**. This revision integrates upstream authentication/redirect handling, phone-number Apple IDs, official version discovery/metadata and historical IPA downloads. Other-platform commands and the MCP server are not exposed.
+The app version is **v1.0.8**. This revision integrates modern authentication and local Anisette provisioning, live setup messages, phone-number Apple IDs, official version discovery/metadata and historical IPA downloads. Other-platform commands and the MCP server are not exposed.
 
 Each launch has an isolated account directory and random keychain passphrase. Normal exit deletes account credentials and cookies while preserving non-secret runtime assets separately. Apple decides whether to require 2FA or push a trusted-device notification; the app cannot force either. Missing runtime components are downloaded and verified by upstream on first use, which may take longer.
 
-Source setup: `pip install -r requirements.txt`, then `python prepare_engine.py` (verifies both archive and executable SHA-256, and reuses an already verified engine). Tests: `python -m unittest test_engine_adapter -v`. Build: `pyinstaller --clean --noconfirm ios_old_app_downloader.spec`. Offline packaged check: `iOSAppDownloader_v1.0.7.exe --self-test report.json`; it does not sign in or purchase anything.
+Source setup: `pip install -r requirements.txt`, then `python prepare_engine.py` (reproduces the pinned source compatibility build, verifies the final executable, and reuses a verified engine). Build tools are temporary and not installed globally. Tests: `python -m unittest test_engine_adapter -v`. Build: `pyinstaller --clean --noconfirm ios_old_app_downloader.spec`. Offline packaged check: `iOSAppDownloader_v1.0.8.exe --self-test report.json`; it does not sign in or purchase anything. Use an isolated Python environment to avoid incompatible Qt extensions left by interpreter upgrades. End users need no Python, Go, or certificate installation.
